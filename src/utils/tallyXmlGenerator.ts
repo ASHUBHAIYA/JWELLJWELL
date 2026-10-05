@@ -353,7 +353,6 @@ export function generateTallyXmlEnvelope(
       const party = escapeXml(bill.postAccountName);
       const sales = escapeXml(bill.itemSalesAccount);
       const vno = escapeXml(bill.voucherNo);
-      const remoteId = escapeXml(`bullionsplit-${tallyDate}-${vno}-${String(bill.billNumber).padStart(4, '0')}`);
       const rate = Number(bill.rate).toFixed(2);
       const qty = `${bill.weight.toFixed(3)} ${UNIT}`;
       const neg = (n: number) => (n === 0 ? '0.00' : `-${n.toFixed(2)}`);
@@ -380,7 +379,7 @@ export function generateTallyXmlEnvelope(
           : '';
 
       return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHER REMOTEID="${remoteId}" VCHKEY="${remoteId}" VCHTYPE="Sales" ACTION="Create">
+        <VOUCHER VCHTYPE="Sales" ACTION="Create" OBJVIEW="Invoice Voucher View">
           <DATE>${tallyDate}</DATE>
           <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
           <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
@@ -392,7 +391,7 @@ export function generateTallyXmlEnvelope(
           <PLACEOFSUPPLY>${state}</PLACEOFSUPPLY>
           <ISINVOICE>Yes</ISINVOICE>
           <VCHENTRYMODE>Item Invoice</VCHENTRYMODE>
-          <NARRATION>Split Batch #${bill.billNumber} (${qty} @ ${rate})</NARRATION>
+          <NARRATION>Being sale of ${item}</NARRATION>
           <LEDGERENTRIES.LIST>
             <LEDGERNAME>${party}</LEDGERNAME>
             <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
@@ -464,14 +463,12 @@ export function generateBankVouchersTallyXml(
       const tallyDate = formatTallyDate(e.date);
       const isReceipt = e.type === 'Receipt';
       const vchNumber = e.refNo || `${isReceipt ? 'BRCT' : 'BPMT'}-${index + 1}`;
-      const remoteId = `bank-stmt-${tallyDate}-${index + 1}-${vchNumber}`;
-      const vchKey = `${remoteId}:${index + 1}`;
 
       const amtStr = Math.abs(e.amount).toFixed(2);
 
       if (isReceipt) {
         return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHER DATE="${tallyDate}" REMOTEID="${escapeXml(remoteId)}" VCHKEY="${escapeXml(vchKey)}" VCHTYPE="Receipt" ACTION="Create">
+        <VOUCHER VCHTYPE="Receipt" ACTION="Create" OBJVIEW="Accounting Voucher View">
           <DATE>${tallyDate}</DATE>
           <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
           <REFERENCEDATE>${tallyDate}</REFERENCEDATE>
@@ -495,7 +492,7 @@ export function generateBankVouchersTallyXml(
       </TALLYMESSAGE>`;
       } else {
         return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHER DATE="${tallyDate}" REMOTEID="${escapeXml(remoteId)}" VCHKEY="${escapeXml(vchKey)}" VCHTYPE="Payment" ACTION="Create">
+        <VOUCHER VCHTYPE="Payment" ACTION="Create" OBJVIEW="Accounting Voucher View">
           <DATE>${tallyDate}</DATE>
           <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
           <REFERENCEDATE>${tallyDate}</REFERENCEDATE>
