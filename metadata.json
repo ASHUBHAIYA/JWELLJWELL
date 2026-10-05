@@ -1,0 +1,6 @@
+{
+  "name": "BullionSplit ERP — Jewellery Bill Splitter & Tally Bridge",
+  "description": "Retail jewellery POS bill-splitting workbench and Tally Prime XML bridge for partitioning bulk gold and silver cash transactions under statutory thresholds with 0.001g precision.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
