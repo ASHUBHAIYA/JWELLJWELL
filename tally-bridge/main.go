@@ -36,7 +36,9 @@ const (
 )
 
 // Injected at build time:
-//   go build -ldflags "-s -w -X main.DefaultCloudWorkerURL=https://your-worker.example.workers.dev" -o tally-bridge.exe main.go
+//
+//	go build -ldflags "-s -w -X main.DefaultCloudWorkerURL=https://your-worker.example.workers.dev" -o tally-bridge.exe main.go
+//
 // Can also be provided at runtime via the TALLY_BRIDGE_WORKER_URL environment variable.
 var DefaultCloudWorkerURL = ""
 
@@ -610,11 +612,13 @@ func getTallyActiveCompany() string {
 
 var (
 	reLineError = regexp.MustCompile(`(?is)<LINEERROR[^>]*>(.*?)</LINEERROR>`)
-	reNumTag    = func(tag string) *regexp.Regexp { return regexp.MustCompile(`(?is)<` + tag + `[^>]*>\s*(\d+)\s*</` + tag + `>`) }
-	reCreated   = reNumTag("CREATED")
-	reAltered   = reNumTag("ALTERED")
-	reErrors    = reNumTag("ERRORS")
-	reExcept    = reNumTag("EXCEPTIONS")
+	reNumTag    = func(tag string) *regexp.Regexp {
+		return regexp.MustCompile(`(?is)<` + tag + `[^>]*>\s*(\d+)\s*</` + tag + `>`)
+	}
+	reCreated = reNumTag("CREATED")
+	reAltered = reNumTag("ALTERED")
+	reErrors  = reNumTag("ERRORS")
+	reExcept  = reNumTag("EXCEPTIONS")
 )
 
 func looksLikeTallyEnvelope(x string) bool {
