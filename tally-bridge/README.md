@@ -16,7 +16,7 @@ The Worker URL is baked in at build time (nothing personal is hardcoded in the s
 
 ```bash
 # Windows
-go build -ldflags "-s -w -X main.DefaultCloudWorkerURL=https://YOUR-WORKER.workers.dev" -o tally-bridge.exe main.go
+go build -ldflags "-s -w -X main.DefaultCloudWorkerURL=https://atits-auth.abhishek791996.workers.dev" -o tally-bridge.exe main.go
 
 # Cross-compile from Mac / Linux
 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.DefaultCloudWorkerURL=https://YOUR-WORKER.workers.dev" -o tally-bridge.exe main.go
