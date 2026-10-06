@@ -123,7 +123,7 @@ export const BillingForm: React.FC<BillingFormProps> = ({
     e.preventDefault();
     if (newItemName.trim()) {
       onAddItemPreset({
-        name: newItemName.trim().toUpperCase(),
+        name: newItemName.trim(),
         hsnCode: newItemHsn.trim() || '7108',
         unit: 'g',
         openingStock: 500,
@@ -132,7 +132,7 @@ export const BillingForm: React.FC<BillingFormProps> = ({
         defaultMinBillLimit: newItemMinLimit,
         defaultMaxBillLimit: newItemMaxLimit,
         defaultTotalWeight: newItemDefaultWeight,
-        description: `Custom Bullion / Jewellery Article (Grams)`,
+        description: `Bullion / Jewellery Article (${newItemName.trim()})`,
       });
       setNewItemName('');
       setShowNewItemModal(false);
@@ -188,6 +188,17 @@ export const BillingForm: React.FC<BillingFormProps> = ({
         <div className="flex flex-wrap items-center gap-2.5 text-xs">
           <button
             type="button"
+            onClick={onFetchInvoiceFromTally}
+            disabled={isFetchingInvoice}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-lg transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+            title="Fetch Post Accounts, Stock Items, Sales Accounts and latest voucher number from Tally Prime"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-amber-800 ${isFetchingInvoice ? 'animate-spin' : ''}`} />
+            <span>{isFetchingInvoice ? 'Fetching Masters...' : 'Fetch from Tally'}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={onOpenBankImport}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-950 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-lg transition-colors cursor-pointer shadow-xs"
             title="Import Bank Statement Excel (.xlsx, .csv) to auto-fill total weight"
@@ -237,6 +248,9 @@ export const BillingForm: React.FC<BillingFormProps> = ({
               }}
               className="w-full h-10 px-2.5 text-xs font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:border-amber-600 truncate"
             >
+              {config.postAccountName && !postLedgers.includes(config.postAccountName) && (
+                <option value={config.postAccountName}>{config.postAccountName}</option>
+              )}
               {postLedgers.map((ledger) => (
                 <option key={ledger} value={ledger}>
                   {ledger}
@@ -278,6 +292,9 @@ export const BillingForm: React.FC<BillingFormProps> = ({
               }}
               className="w-full h-10 px-2.5 text-xs font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:border-amber-600 truncate"
             >
+              {config.itemName && !itemPresets.some((p) => p.name === config.itemName) && (
+                <option value={config.itemName}>{config.itemName}</option>
+              )}
               {itemPresets.map((p) => (
                 <option key={p.name} value={p.name}>
                   {p.name}
@@ -317,6 +334,9 @@ export const BillingForm: React.FC<BillingFormProps> = ({
               }}
               className="w-full h-10 px-2.5 text-xs font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500/40 focus:border-amber-600 truncate"
             >
+              {config.itemSalesAccount && !salesLedgers.includes(config.itemSalesAccount) && (
+                <option value={config.itemSalesAccount}>{config.itemSalesAccount}</option>
+              )}
               {salesLedgers.map((ledger) => (
                 <option key={ledger} value={ledger}>
                   {ledger}
@@ -665,8 +685,8 @@ export const BillingForm: React.FC<BillingFormProps> = ({
                   type="text"
                   autoFocus
                   value={newPostName}
-                  onChange={(e) => setNewPostName(e.target.value.toUpperCase())}
-                  placeholder="e.g. VIP COUNTER CASH"
+                  onChange={(e) => setNewPostName(e.target.value)}
+                  placeholder="e.g. VIP Counter Cash / Cash / Sundry Debtors"
                   className="w-full h-9 px-3 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-amber-600"
                 />
               </div>
@@ -737,8 +757,8 @@ export const BillingForm: React.FC<BillingFormProps> = ({
                   type="text"
                   autoFocus
                   value={newSalesName}
-                  onChange={(e) => setNewSalesName(e.target.value.toUpperCase())}
-                  placeholder="e.g. TAXABLE BULLION 3%"
+                  onChange={(e) => setNewSalesName(e.target.value)}
+                  placeholder="e.g. Sales / GST Sales 3% / Bullion Sales"
                   className="w-full h-9 px-3 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:border-amber-600"
                 />
               </div>
@@ -810,8 +830,8 @@ export const BillingForm: React.FC<BillingFormProps> = ({
                     type="text"
                     autoFocus
                     value={newItemName}
-                    onChange={(e) => setNewItemName(e.target.value.toUpperCase())}
-                    placeholder="e.g. ROSE GOLD 18K"
+                    onChange={(e) => setNewItemName(e.target.value)}
+                    placeholder="e.g. Gold 999 / Silver 999 / Rose Gold"
                     className="w-full h-8 px-2.5 text-xs font-mono border border-slate-300 rounded-md focus:outline-none focus:border-amber-600"
                   />
                 </div>

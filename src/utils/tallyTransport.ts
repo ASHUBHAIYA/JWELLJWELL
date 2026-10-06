@@ -275,3 +275,134 @@ export async function fetchTallyLedgers(company: string): Promise<{
 
   return { bankLedgers, partyLedgers, allLedgers: all };
 }
+
+export interface TallyStockItemInfo {
+  name: string;
+  baseUnits?: string;
+  hsnCode?: string;
+  openingBalance?: string;
+}
+
+export function buildFetchStockItemsQuery(company: string): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return `<ENVELOPE>
+ <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>ATITSStockItemsCollection</ID></HEADER>
+ <BODY><DESC>
+  <STATICVARIABLES>
+   <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+   <SVCURRENTCOMPANY>${esc(company)}</SVCURRENTCOMPANY>
+  </STATICVARIABLES>
+  <TDL><TDLMESSAGE>
+   <COLLECTION NAME="ATITSStockItemsCollection" ISMODIFY="No">
+    <TYPE>StockItem</TYPE>
+    <FETCH>Name, BaseUnits, OpeningBalance, ClosingBalance, HsnCode</FETCH>
+   </COLLECTION>
+  </TDLMESSAGE></TDL>
+ </DESC></BODY>
+</ENVELOPE>`;
+}
+
+export function parseTallyStockItems(raw: string): TallyStockItemInfo[] {
+  const items: TallyStockItemInfo[] = [];
+  const re = /<STOCKITEM[\s>][\s\S]*?<\/STOCKITEM>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const block = m[0];
+    const nameMatch = block.match(/<NAME[^>]*>([^<]+)<\/NAME>/i) || block.match(/NAME="([^"]+)"/i);
+    const unitsMatch = block.match(/<BASEUNITS[^>]*>([^<]+)<\/BASEUNITS>/i);
+    const hsnMatch = block.match(/<HSNCODE[^>]*>([^<]+)<\/HSNCODE>/i);
+    const opBalMatch = block.match(/<OPENINGBALANCE[^>]*>([^<]+)<\/OPENINGBALANCE>/i);
+    if (nameMatch && nameMatch[1].trim()) {
+      items.push({
+        name: decodeXml(nameMatch[1].trim()),
+        baseUnits: unitsMatch ? decodeXml(unitsMatch[1].trim()) : 'GMS',
+        hsnCode: hsnMatch ? decodeXml(hsnMatch[1].trim()) : undefined,
+        openingBalance: opBalMatch ? decodeXml(opBalMatch[1].trim()) : undefined,
+      });
+    }
+  }
+  return items;
+}
+
+export async function fetchTallyStockItems(company: string): Promise<{
+  stockItems: TallyStockItemInfo[];
+  error?: string;
+}> {
+  const key = getLicenseKey();
+  if (!key) return { stockItems: [], error: 'No license key set in Company Settings.' };
+  if (!company?.trim()) return { stockItems: [], error: 'No Tally company specified.' };
+
+  const res = await queryTallyViaCloudflareRelay(buildFetchStockItemsQuery(company), key);
+  if (!res.success || !res.tallyResponse) {
+    return { stockItems: [], error: res.error || 'No response from bridge' };
+  }
+  const stockItems = parseTallyStockItems(res.tallyResponse);
+  return { stockItems };
+}
+
+export async function fetchTallyBillingMasters(company: string): Promise<{
+  postLedgers: string[];
+  salesLedgers: string[];
+  stockItems: TallyStockItemInfo[];
+  bankLedgers: string[];
+  error?: string;
+}> {
+  const [ledgersRes, stockRes] = await Promise.all([
+    fetchTallyLedgers(company),
+    fetchTallyStockItems(company),
+  ]);
+
+  if (ledgersRes.error && stockRes.error) {
+    return {
+      postLedgers: [],
+      salesLedgers: [],
+      stockItems: [],
+      bankLedgers: [],
+      error: ledgersRes.error || stockRes.error,
+    };
+  }
+
+  const allLedgers = ledgersRes.allLedgers || [];
+  const postLedgers: string[] = [];
+  const salesLedgers: string[] = [];
+  const bankLedgers: string[] = [];
+
+  for (const item of allLedgers) {
+    const parentLower = item.parent.toLowerCase();
+    const nameLower = item.name.toLowerCase();
+
+    if (
+      parentLower.includes('bank') ||
+      parentLower.includes('od') ||
+      parentLower.includes('occ') ||
+      /bank|hdfc|icici|sbi|axis|pnb|canara|kotak|bob|union|indusind/i.test(item.name)
+    ) {
+      bankLedgers.push(item.name);
+    } else if (
+      parentLower.includes('sales') ||
+      nameLower.includes('sales') ||
+      nameLower.includes('gst sale') ||
+      nameLower.includes('taxable sale')
+    ) {
+      salesLedgers.push(item.name);
+    } else if (
+      !parentLower.includes('duties') &&
+      !parentLower.includes('tax') &&
+      !parentLower.includes('indirect exp') &&
+      !parentLower.includes('direct exp')
+    ) {
+      // Party / Post accounts (Sundry Debtors, Cash-in-hand, Sundry Creditors, etc.)
+      postLedgers.push(item.name);
+    } else {
+      postLedgers.push(item.name);
+    }
+  }
+
+  return {
+    postLedgers,
+    salesLedgers: salesLedgers.length > 0 ? salesLedgers : ['SALES', 'GST SALES 3%'],
+    stockItems: stockRes.stockItems,
+    bankLedgers,
+  };
+}

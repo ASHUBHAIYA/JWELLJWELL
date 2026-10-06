@@ -25,6 +25,7 @@ import {
   saveLicenseKey,
   importToTally,
   fetchLastSalesVoucher,
+  fetchTallyBillingMasters,
   isBridgeOnline,
 } from './utils/tallyTransport';
 import { BridgeStatus, VoucherSyncLog } from './types';
@@ -55,6 +56,7 @@ export default function App() {
     reconcileWeightDelta,
     resetAll,
     applyStockPreset,
+    mergeTallyMasters,
   } = useBillSplitter();
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('workbench');
@@ -177,8 +179,8 @@ export default function App() {
   );
 
   /**
-   * Fetches the latest Sales voucher number from Tally (via cloud relay -> tally-bridge.exe)
-   * and sets the next invoice number.
+   * Fetches the latest Sales voucher number, Post Accounts (party ledgers), Stock Items,
+   * and Sales Accounts from Tally (via cloud relay -> tally-bridge.exe).
    */
   const handleFetchInvoiceFromTally = useCallback(
     async (silent: boolean = false) => {
@@ -186,10 +188,27 @@ export default function App() {
         if (!silent) showToast('Enter your license key in Company Settings to connect to Tally.');
         return;
       }
+      if (!bridgeStatus.companyName?.trim()) {
+        if (!silent) showToast('Enter your Tally company name in Company Settings before fetching.');
+        return;
+      }
 
       setIsFetchingInvoice(true);
-      const { voucher, error: fetchError } = await fetchLastSalesVoucher(bridgeStatus.companyName);
+      const [vchRes, mastersRes] = await Promise.all([
+        fetchLastSalesVoucher(bridgeStatus.companyName),
+        fetchTallyBillingMasters(bridgeStatus.companyName),
+      ]);
       setIsFetchingInvoice(false);
+
+      if (mastersRes && (mastersRes.postLedgers.length > 0 || mastersRes.stockItems.length > 0 || mastersRes.salesLedgers.length > 0)) {
+        mergeTallyMasters({
+          postLedgers: mastersRes.postLedgers,
+          salesLedgers: mastersRes.salesLedgers,
+          stockItems: mastersRes.stockItems.map((s) => ({ name: s.name, hsnCode: s.hsnCode })),
+        });
+      }
+
+      const { voucher, error: fetchError } = vchRes;
 
       if (voucher) {
         const next = voucher.lastNumber + 1;
@@ -199,16 +218,22 @@ export default function App() {
           prev.map((b, idx) => ({ ...b, voucherNo: `${voucher.prefix}${next + idx}` }))
         );
         if (!silent) {
-          showToast(`Connected to Tally (${bridgeStatus.companyName}) · Last: ${voucher.full} · Next: ${voucher.prefix}${next}`);
+          const mCount = mastersRes
+            ? ` · Loaded ${mastersRes.postLedgers.length} Accounts, ${mastersRes.stockItems.length} Items, ${mastersRes.salesLedgers.length} Sales`
+            : '';
+          showToast(`Connected to Tally (${bridgeStatus.companyName}) · Last: ${voucher.full} · Next: ${voucher.prefix}${next}${mCount}`);
         }
       } else if (fetchError) {
         if (!silent) showToast(`Could not read last invoice: ${fetchError}`);
       } else {
         setBridgeStatus((prev) => ({ ...prev, connected: true }));
-        if (!silent) showToast('Connected. No Sales vouchers found this financial year — using your configured starting number.');
+        const mCount = mastersRes
+          ? ` · Loaded ${mastersRes.postLedgers.length} Accounts, ${mastersRes.stockItems.length} Items, ${mastersRes.salesLedgers.length} Sales`
+          : '';
+        if (!silent) showToast(`Connected to Tally (${bridgeStatus.companyName})${mCount}`);
       }
     },
-    [bridgeStatus.companyName, setConfig, setBills, showToast]
+    [bridgeStatus.companyName, setConfig, setBills, showToast, mergeTallyMasters]
   );
 
   /**

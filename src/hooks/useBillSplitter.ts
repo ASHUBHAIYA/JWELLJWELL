@@ -447,10 +447,11 @@ export function useBillSplitter() {
   );
 
   const addPostLedger = useCallback((name: string) => {
-    const trimmed = name.trim().toUpperCase();
+    const trimmed = name.trim();
     if (!trimmed) return;
     setPostLedgers((prev) => {
-      if (prev.includes(trimmed)) return prev;
+      const match = prev.find((l) => l.toLowerCase() === trimmed.toLowerCase());
+      if (match) return prev;
       return [...prev, trimmed];
     });
     setConfig((prev) => ({ ...prev, postAccountName: trimmed }));
@@ -464,10 +465,11 @@ export function useBillSplitter() {
   }, []);
 
   const addSalesLedger = useCallback((name: string) => {
-    const trimmed = name.trim().toUpperCase();
+    const trimmed = name.trim();
     if (!trimmed) return;
     setSalesLedgers((prev) => {
-      if (prev.includes(trimmed)) return prev;
+      const match = prev.find((l) => l.toLowerCase() === trimmed.toLowerCase());
+      if (match) return prev;
       return [...prev, trimmed];
     });
     setConfig((prev) => ({ ...prev, itemSalesAccount: trimmed }));
@@ -481,7 +483,7 @@ export function useBillSplitter() {
   }, []);
 
   const addItemPreset = useCallback((preset: StockItemPreset) => {
-    const cleanName = preset.name.trim().toUpperCase();
+    const cleanName = preset.name.trim();
     if (!cleanName) return;
     const cleanPreset: StockItemPreset = {
       ...preset,
@@ -489,7 +491,7 @@ export function useBillSplitter() {
       unit: 'g',
     };
     setItemPresets((prev) => {
-      const existsIdx = prev.findIndex((p) => p.name === cleanName);
+      const existsIdx = prev.findIndex((p) => p.name.toLowerCase() === cleanName.toLowerCase());
       if (existsIdx >= 0) {
         const next = [...prev];
         next[existsIdx] = cleanPreset;
@@ -509,6 +511,103 @@ export function useBillSplitter() {
       maxBillLimit: cleanPreset.defaultMaxBillLimit || prev.maxBillLimit,
     }));
   }, []);
+
+  const mergeTallyMasters = useCallback(
+    (tallyMasters: {
+      postLedgers?: string[];
+      salesLedgers?: string[];
+      stockItems?: { name: string; hsnCode?: string }[];
+    }) => {
+      if (tallyMasters.postLedgers && tallyMasters.postLedgers.length > 0) {
+        setPostLedgers((prev) => {
+          const map = new Map<string, string>();
+          for (const item of tallyMasters.postLedgers!) {
+            if (item.trim() && !map.has(item.trim().toLowerCase())) {
+              map.set(item.trim().toLowerCase(), item.trim());
+            }
+          }
+          for (const item of prev) {
+            if (item.trim() && !map.has(item.trim().toLowerCase())) {
+              map.set(item.trim().toLowerCase(), item.trim());
+            }
+          }
+          return Array.from(map.values());
+        });
+
+        setConfig((prev) => {
+          if (!prev.postAccountName || !tallyMasters.postLedgers!.some((l) => l.toLowerCase() === prev.postAccountName.toLowerCase())) {
+            return { ...prev, postAccountName: tallyMasters.postLedgers![0] };
+          }
+          const exactMatch = tallyMasters.postLedgers!.find((l) => l.toLowerCase() === prev.postAccountName.toLowerCase());
+          return exactMatch ? { ...prev, postAccountName: exactMatch } : prev;
+        });
+      }
+
+      if (tallyMasters.salesLedgers && tallyMasters.salesLedgers.length > 0) {
+        setSalesLedgers((prev) => {
+          const map = new Map<string, string>();
+          for (const item of tallyMasters.salesLedgers!) {
+            if (item.trim() && !map.has(item.trim().toLowerCase())) {
+              map.set(item.trim().toLowerCase(), item.trim());
+            }
+          }
+          for (const item of prev) {
+            if (item.trim() && !map.has(item.trim().toLowerCase())) {
+              map.set(item.trim().toLowerCase(), item.trim());
+            }
+          }
+          return Array.from(map.values());
+        });
+
+        setConfig((prev) => {
+          if (!prev.itemSalesAccount || !tallyMasters.salesLedgers!.some((l) => l.toLowerCase() === prev.itemSalesAccount.toLowerCase())) {
+            return { ...prev, itemSalesAccount: tallyMasters.salesLedgers![0] };
+          }
+          const exactMatch = tallyMasters.salesLedgers!.find((l) => l.toLowerCase() === prev.itemSalesAccount.toLowerCase());
+          return exactMatch ? { ...prev, itemSalesAccount: exactMatch } : prev;
+        });
+      }
+
+      if (tallyMasters.stockItems && tallyMasters.stockItems.length > 0) {
+        setItemPresets((prev) => {
+          const map = new Map<string, StockItemPreset>();
+          for (const item of tallyMasters.stockItems!) {
+            const cleanName = item.name.trim();
+            if (!cleanName) continue;
+            const existing = prev.find((p) => p.name.toLowerCase() === cleanName.toLowerCase());
+            map.set(cleanName.toLowerCase(), {
+              name: cleanName,
+              hsnCode: item.hsnCode || existing?.hsnCode || '7108',
+              unit: 'g',
+              openingStock: existing?.openingStock ?? 500,
+              defaultMinRate: existing?.defaultMinRate ?? 7500,
+              defaultMaxRate: existing?.defaultMaxRate ?? 7650,
+              defaultMinBillLimit: existing?.defaultMinBillLimit ?? 35000,
+              defaultMaxBillLimit: existing?.defaultMaxBillLimit ?? 48500,
+              defaultTotalWeight: existing?.defaultTotalWeight ?? 50,
+              description: existing?.description || `Tally Stock Item (${cleanName})`,
+            });
+          }
+          for (const p of prev) {
+            if (!map.has(p.name.toLowerCase())) {
+              map.set(p.name.toLowerCase(), p);
+            }
+          }
+          return Array.from(map.values());
+        });
+
+        setConfig((prev) => {
+          const firstStock = tallyMasters.stockItems![0]?.name;
+          if (!prev.itemName || !tallyMasters.stockItems!.some((s) => s.name.toLowerCase() === prev.itemName.toLowerCase())) {
+            return firstStock ? { ...prev, itemName: firstStock } : prev;
+          }
+          const exactMatch = tallyMasters.stockItems!.find((s) => s.name.toLowerCase() === prev.itemName.toLowerCase());
+          return exactMatch ? { ...prev, itemName: exactMatch.name } : prev;
+        });
+      }
+    },
+    []
+  );
 
   const removeItemPreset = useCallback((name: string) => {
     setItemPresets((prev) => {
@@ -739,5 +838,6 @@ export function useBillSplitter() {
     reconcileWeightDelta,
     resetAll,
     applyStockPreset,
+    mergeTallyMasters,
   };
 }
