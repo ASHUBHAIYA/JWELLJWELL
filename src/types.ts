@@ -104,6 +104,8 @@ export interface BankVoucherEntry {
   balance?: number | string;
   bankLedger: string;
   partyLedger: string;
+  /** Send as a Contra voucher (bank <-> cash / bank). Direction still comes from `type`. */
+  isContra?: boolean;
   selected: boolean;
   syncStatus?: 'idle' | 'pending' | 'synced' | 'failed';
   tallyMasterId?: string;

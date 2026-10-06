@@ -24,6 +24,7 @@ import {
   downloadFile,
 } from '../utils/tallyXmlGenerator';
 import { getLicenseKey, importToTally, fetchTallyLedgers, fetchLastBankVoucher } from '../utils/tallyTransport';
+import { applyNarrationMappings, learnMapping, groupForLedger } from '../utils/narrationRules';
 
 const INITIAL_BANK_LEDGERS: string[] = []; // added by the user or fetched from Tally
 
@@ -33,6 +34,30 @@ interface BankStatementManagerProps {
   bridgeStatus: BridgeStatus;
   onCloseModal?: () => void;
   isModal?: boolean;
+}
+
+function dedupeLedgersCaseInsensitive(priorityList: string[], secondaryList: string[] = []): string[] {
+  const map = new Map<string, string>();
+  for (const name of priorityList) {
+    const trimmed = name?.trim();
+    if (trimmed && !map.has(trimmed.toLowerCase())) {
+      map.set(trimmed.toLowerCase(), trimmed);
+    }
+  }
+  for (const name of secondaryList) {
+    const trimmed = name?.trim();
+    if (trimmed && !map.has(trimmed.toLowerCase())) {
+      map.set(trimmed.toLowerCase(), trimmed);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function findMatchingLedger(name: string, knownList: string[]): string {
+  if (!name?.trim()) return name;
+  const trimmed = name.trim();
+  const found = knownList.find((k) => k.toLowerCase() === trimmed.toLowerCase());
+  return found || trimmed;
 }
 
 export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
@@ -137,17 +162,35 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       }
 
       if (res.bankLedgers.length > 0) {
-        setBankLedgers((prev) => Array.from(new Set([...res.bankLedgers, ...prev])));
-        if (!selectedBankLedger || !res.bankLedgers.includes(selectedBankLedger)) {
-          setSelectedBankLedger(res.bankLedgers[0]);
-        }
+        const mergedBanks = dedupeLedgersCaseInsensitive(res.bankLedgers, bankLedgers);
+        setBankLedgers(mergedBanks);
+
+        setSelectedBankLedger((prev) => {
+          return findMatchingLedger(prev, res.bankLedgers) || res.bankLedgers[0];
+        });
+
+        setEntries((prev) =>
+          prev.map((e) => ({
+            ...e,
+            bankLedger: findMatchingLedger(e.bankLedger, res.bankLedgers),
+          }))
+        );
       }
 
       if (res.partyLedgers.length > 0) {
-        setPartyLedgers((prev) => Array.from(new Set([...res.partyLedgers, ...prev])));
-        if (!selectedDefaultParty || !res.partyLedgers.includes(selectedDefaultParty)) {
-          setSelectedDefaultParty(res.partyLedgers[0]);
-        }
+        const mergedParties = dedupeLedgersCaseInsensitive(res.partyLedgers, partyLedgers);
+        setPartyLedgers(mergedParties);
+
+        setSelectedDefaultParty((prev) => {
+          return findMatchingLedger(prev, res.partyLedgers) || res.partyLedgers[0];
+        });
+
+        setEntries((prev) =>
+          prev.map((e) => ({
+            ...e,
+            partyLedger: e.partyLedger ? findMatchingLedger(e.partyLedger, res.partyLedgers) : e.partyLedger,
+          }))
+        );
       }
 
       setPushStatusMessage(
@@ -172,9 +215,14 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       } catch {}
     }
 
-    setBankLedgers((prev) => Array.from(new Set([...prev, name])));
+    const updatedBanks = dedupeLedgersCaseInsensitive([name], bankLedgers);
+    setBankLedgers(updatedBanks);
     setSelectedBankLedger(name);
-    setEntries((prev) => prev.map((e) => (e.bankLedger === selectedBankLedger ? { ...e, bankLedger: name } : e)));
+    setEntries((prev) =>
+      prev.map((e) =>
+        e.bankLedger.toLowerCase() === selectedBankLedger.toLowerCase() ? { ...e, bankLedger: name } : e
+      )
+    );
     setNewBankName('');
     setNewBankCreating(false);
     setShowNewBankModal(false);
@@ -194,7 +242,8 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       } catch {}
     }
 
-    setPartyLedgers((prev) => Array.from(new Set([...prev, name])));
+    const updatedParties = dedupeLedgersCaseInsensitive([name], partyLedgers);
+    setPartyLedgers(updatedParties);
     setSelectedDefaultParty(name);
     setNewPartyName('');
     setNewPartyCreating(false);
@@ -345,7 +394,7 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       }
 
       if (parsed.length > 0) {
-        setEntries(parsed);
+        setEntries(applyNarrationMappings(parsed));
         setUploadStatus(`Loaded ${parsed.length} bank statement vouchers from "${sourceName}".`);
       } else {
         setUploadStatus('Could not identify transactions in the uploaded sheet.');
@@ -424,7 +473,7 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
     }
 
     if (parsed.length > 0) {
-      setEntries(parsed);
+      setEntries(applyNarrationMappings(parsed));
       setPasteText('');
       setUploadStatus(`Parsed ${parsed.length} vouchers from text.`);
     }
@@ -453,7 +502,13 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
   };
 
   const updateEntryParty = (id: string, newParty: string) => {
+    const target = entries.find((e) => e.id === id);
+    if (target) learnMapping(target.narration, newParty);
     setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, partyLedger: newParty } : e)));
+  };
+
+  const toggleEntryContra = (id: string) => {
+    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, isContra: !e.isContra } : e)));
   };
 
   const updateEntryType = (id: string, newType: 'Receipt' | 'Payment') => {
@@ -544,8 +599,8 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
 
       for (const missingName of missingLedgers) {
         if (!missingName) continue;
-        const isBank = selectedEntries.some((e) => e.bankLedger === missingName) || /bank|od|occ/i.test(missingName);
-        const parentGroup = isBank ? 'Bank Accounts' : 'Sundry Debtors';
+        const isBank = selectedEntries.some((e) => e.bankLedger === missingName);
+        const parentGroup = groupForLedger(missingName, isBank);
         try {
           const xml = generateCreateSingleLedgerXml(missingName, parentGroup, bridgeStatus.companyName);
           await importToTally(xml);
@@ -993,12 +1048,27 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
                         )}
                       </td>
                       <td className="py-2 px-3 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => toggleEntryContra(entry.id)}
+                          title="Send as Contra voucher (bank <-> cash / bank)"
+                          className={`mr-1.5 h-7 px-2 text-[10px] font-bold rounded-md border ${
+                            entry.isContra
+                              ? 'bg-indigo-600 text-white border-indigo-700'
+                              : 'bg-white text-slate-500 border-slate-300 hover:border-indigo-400'
+                          }`}
+                        >
+                          CONTRA
+                        </button>
                         <select
                           value={entry.partyLedger}
                           onChange={(e) => updateEntryParty(entry.id, e.target.value)}
                           className="h-7 px-2 text-xs font-mono bg-white border border-slate-300 rounded-md max-w-[200px] truncate focus:border-amber-500 focus:outline-none"
                         >
                           <option value="">(Optional / Suspense)</option>
+                          {entry.partyLedger && !partyLedgers.includes(entry.partyLedger) && (
+                            <option value={entry.partyLedger}>{entry.partyLedger}</option>
+                          )}
                           {partyLedgers.map((p) => (
                             <option key={p} value={p}>
                               {p}
@@ -1096,8 +1166,8 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
                 type="text"
                 autoFocus
                 value={newBankName}
-                onChange={(e) => setNewBankName(e.target.value.toUpperCase())}
-                placeholder="e.g. HDFC BANK A/C"
+                onChange={(e) => setNewBankName(e.target.value)}
+                placeholder="e.g. HDFC Bank / hdfc bank / HDFC BANK"
                 className="w-full h-8 px-2 text-xs font-mono border border-slate-300 rounded-md focus:border-amber-500 focus:outline-none"
               />
             </div>
@@ -1143,8 +1213,8 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
                 type="text"
                 autoFocus
                 value={newPartyName}
-                onChange={(e) => setNewPartyName(e.target.value.toUpperCase())}
-                placeholder="e.g. TANISHKA ENTERPRISES"
+                onChange={(e) => setNewPartyName(e.target.value)}
+                placeholder="e.g. Tanishka Enterprises / tanishka / TANISHKA"
                 className="w-full h-8 px-2 text-xs font-mono border border-slate-300 rounded-md focus:border-amber-500 focus:outline-none"
               />
             </div>

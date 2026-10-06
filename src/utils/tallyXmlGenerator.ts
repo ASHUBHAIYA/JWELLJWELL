@@ -378,7 +378,7 @@ export function generateTallyXmlEnvelope(
           </LEDGERENTRIES.LIST>`
           : '';
 
-      return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+      return `      <TALLYMESSAGE xmlns:UDF="TALLYUDF">
         <VOUCHER VCHTYPE="Sales" ACTION="Create" OBJVIEW="Invoice Voucher View">
           <DATE>${tallyDate}</DATE>
           <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
@@ -452,18 +452,21 @@ ${voucherMessages}
 }
 
 /**
- * Bank Receipt / Payment vouchers (single-entry layout).
+ * Bank Receipt / Payment / Contra vouchers (single-entry layout).
  *
- * Indian accounting rules:
- *  - Receipt (money in):  Bank DEBIT  | Party/Suspense CREDIT
- *  - Payment (money out): Bank CREDIT | Party/Suspense DEBIT
+ * Accounting rules (Tally sign convention: Dr = ISDEEMEDPOSITIVE Yes + negative amount,
+ * Cr = ISDEEMEDPOSITIVE No + positive amount):
+ *  - Money in  (Receipt, or Contra deposit):   Bank Dr | Counter ledger Cr
+ *  - Money out (Payment, or Contra withdrawal): Bank Cr | Counter ledger Dr
  *
- * Single-Entry Tally mapping:
- *  1. Bank ledger is the FIRST ALLLEDGERENTRIES entry, ISPARTYLEDGER=Yes, with BANKALLOCATIONS.LIST.
- *     This instructs Tally to bind the bank ledger to the top "Account" / "Current balance" header.
- *  2. Counter ledger (party/suspense/expense) is the SECOND ALLLEDGERENTRIES entry, ISPARTYLEDGER=No.
- *     This renders cleanly in the "Particulars" line-item table.
- *  3. Header PARTYLEDGERNAME / PARTYNAME = bank ledger.
+ * Layout follows what Tally itself exports for single-entry vouchers, so that the BANK lands
+ * in the top "Account" field and the counter ledger in "Particulars":
+ *  1. FIRST  ALLLEDGERENTRIES = counter ledger (party / expense / cash), ISPARTYLEDGER=No.
+ *  2. SECOND ALLLEDGERENTRIES = bank ledger, ISPARTYLEDGER=Yes, with BANKALLOCATIONS.LIST.
+ *  3. Header PARTYLEDGERNAME = BANK ledger (this fills the "Account" field);
+ *     PARTYNAME = counter ledger.
+ *
+ * An entry with isContra=true is sent as a Contra voucher (bank <-> cash / another bank).
  */
 export function generateBankVouchersTallyXml(
   entries: BankVoucherEntry[],
@@ -475,31 +478,47 @@ export function generateBankVouchersTallyXml(
     .filter((e) => e.selected)
     .map((e) => {
       const tallyDate = formatTallyDate(e.date);
-      const isReceipt = e.type === 'Receipt';
-      const vType = isReceipt ? 'Receipt' : 'Payment';
+      const isReceipt = e.type === 'Receipt'; // money in
+      const vType = e.isContra ? 'Contra' : isReceipt ? 'Receipt' : 'Payment';
       const bankName = escapeXml(e.bankLedger?.trim() || 'Bank Accounts');
-      const partyName = escapeXml(e.partyLedger?.trim() || 'Suspense A/c');
+      const counterRaw = e.partyLedger?.trim() || '';
+      if (e.isContra && !counterRaw) {
+        throw new Error(`Contra entry dated ${e.date} needs a Cash/Bank ledger in the Party Ledger column.`);
+      }
+      const counterName = escapeXml(counterRaw || 'Suspense A/c');
       const amt = Math.abs(e.amount).toFixed(2);
 
-      // Receipt: bank Dr (-amt, deemed positive Yes) | party Cr (+amt, deemed positive No)
-      // Payment: bank Cr (+amt, deemed positive No)  | party Dr (-amt, deemed positive Yes)
-      const bankDeemed = isReceipt ? 'Yes' : 'No';
+      const bankDeemed = isReceipt ? 'Yes' : 'No'; // bank is Dr on money in
       const bankAmt = isReceipt ? `-${amt}` : amt;
-      const partyDeemed = isReceipt ? 'No' : 'Yes';
-      const partyAmt = isReceipt ? amt : `-${amt}`;
+      const counterDeemed = isReceipt ? 'No' : 'Yes';
+      const counterAmt = isReceipt ? amt : `-${amt}`;
 
       return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
         <VOUCHER VCHTYPE="${vType}" ACTION="Create" OBJVIEW="Accounting Voucher View">
           <DATE>${tallyDate}</DATE>
           <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
           <VOUCHERTYPENAME>${vType}</VOUCHERTYPENAME>
-          <PARTYNAME>${bankName}</PARTYNAME>
+          <PARTYNAME>${counterName}</PARTYNAME>
           <PARTYLEDGERNAME>${bankName}</PARTYLEDGERNAME>
+          <VOUCHERTYPEORIGNAME>${vType}</VOUCHERTYPEORIGNAME>
           <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
           <NARRATION>${escapeXml(e.narration)}</NARRATION>
+          <ISINVOICE>No</ISINVOICE>
+          <HASCASHFLOW>Yes</HASCASHFLOW>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${counterName}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>${counterDeemed}</ISDEEMEDPOSITIVE>
+            <LEDGERFROMITEM>No</LEDGERFROMITEM>
+            <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
+            <ISPARTYLEDGER>No</ISPARTYLEDGER>
+            <ISLASTDEEMEDPOSITIVE>${counterDeemed}</ISLASTDEEMEDPOSITIVE>
+            <AMOUNT>${counterAmt}</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
           <ALLLEDGERENTRIES.LIST>
             <LEDGERNAME>${bankName}</LEDGERNAME>
             <ISDEEMEDPOSITIVE>${bankDeemed}</ISDEEMEDPOSITIVE>
+            <LEDGERFROMITEM>No</LEDGERFROMITEM>
+            <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>
             <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
             <ISLASTDEEMEDPOSITIVE>${bankDeemed}</ISLASTDEEMEDPOSITIVE>
             <AMOUNT>${bankAmt}</AMOUNT>
@@ -507,17 +526,13 @@ export function generateBankVouchersTallyXml(
               <DATE>${tallyDate}</DATE>
               <INSTRUMENTDATE>${tallyDate}</INSTRUMENTDATE>
               <TRANSACTIONTYPE>Others</TRANSACTIONTYPE>
-              <BANKPARTYNAME>${partyName}</BANKPARTYNAME>
+              <BANKPARTYNAME>${counterName}</BANKPARTYNAME>
+              <PAYMENTFAVOURING>${counterName}</PAYMENTFAVOURING>
+              <STATUS>No</STATUS>
               <PAYMENTMODE>Transacted</PAYMENTMODE>
+              <ISCONNECTEDPAYMENT>No</ISCONNECTEDPAYMENT>
               <AMOUNT>${bankAmt}</AMOUNT>
             </BANKALLOCATIONS.LIST>
-          </ALLLEDGERENTRIES.LIST>
-          <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>${partyName}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>${partyDeemed}</ISDEEMEDPOSITIVE>
-            <ISPARTYLEDGER>No</ISPARTYLEDGER>
-            <ISLASTDEEMEDPOSITIVE>${partyDeemed}</ISLASTDEEMEDPOSITIVE>
-            <AMOUNT>${partyAmt}</AMOUNT>
           </ALLLEDGERENTRIES.LIST>
         </VOUCHER>
       </TALLYMESSAGE>`;
