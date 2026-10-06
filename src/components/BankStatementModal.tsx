@@ -7,17 +7,12 @@ interface BankStatementModalProps {
   isOpen: boolean;
   onClose: () => void;
   bridgeStatus: BridgeStatus;
-  currentRate: number; // in ₹/g
-  unitLabel: string;
-  onApplyWeightToSplitter: (weightInGrams: number, note: string) => void;
 }
 
 export const BankStatementModal: React.FC<BankStatementModalProps> = ({
   isOpen,
   onClose,
   bridgeStatus,
-  currentRate,
-  onApplyWeightToSplitter,
 }) => {
   if (!isOpen) return null;
 
@@ -57,8 +52,6 @@ export const BankStatementModal: React.FC<BankStatementModalProps> = ({
         <div className="p-4 sm:p-5 overflow-y-auto flex-1 bg-slate-100">
           <BankStatementManager
             bridgeStatus={bridgeStatus}
-            currentRate={currentRate}
-            onApplyWeightToSplitter={onApplyWeightToSplitter}
             onCloseModal={onClose}
             isModal={true}
           />

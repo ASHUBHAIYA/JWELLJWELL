@@ -472,8 +472,7 @@ export const AdminKeyGenerator: React.FC<AdminKeyGeneratorProps> = ({ isOpen, on
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3.5 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-500">
-          <span>Cloudflare D1 SQL Schema: licenses, admin_config, relay_queue</span>
+        <div className="px-5 py-3.5 bg-slate-950 border-t border-slate-800 flex items-center justify-end text-xs text-slate-500">
           <button
             type="button"
             onClick={onClose}

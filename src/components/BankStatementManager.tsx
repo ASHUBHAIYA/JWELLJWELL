@@ -12,33 +12,31 @@ import {
   Check,
   RefreshCw,
   Landmark,
-  ArrowRight,
-  Sparkles,
   FileCode2,
   Building2,
   FileText,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { BankVoucherEntry, BridgeStatus } from '../types';
-import { generateBankVouchersTallyXml, downloadFile } from '../utils/tallyXmlGenerator';
-import { getLicenseKey, importToTally } from '../utils/tallyTransport';
+import {
+  generateBankVouchersTallyXml,
+  generateCreateSingleLedgerXml,
+  downloadFile,
+} from '../utils/tallyXmlGenerator';
+import { getLicenseKey, importToTally, fetchTallyLedgers, fetchLastBankVoucher } from '../utils/tallyTransport';
 
-const INITIAL_BANK_LEDGERS: string[] = []; // added by the user in the UI
+const INITIAL_BANK_LEDGERS: string[] = []; // added by the user or fetched from Tally
 
-const INITIAL_PARTY_LEDGERS: string[] = []; // added by the user in the UI
+const INITIAL_PARTY_LEDGERS: string[] = []; // added by the user or fetched from Tally
 
 interface BankStatementManagerProps {
   bridgeStatus: BridgeStatus;
-  onApplyWeightToSplitter?: (weightInGrams: number, note: string) => void;
-  currentRate?: number;
   onCloseModal?: () => void;
   isModal?: boolean;
 }
 
 export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
   bridgeStatus,
-  onApplyWeightToSplitter,
-  currentRate = 7540,
   onCloseModal,
   isModal = false,
 }) => {
@@ -78,20 +76,131 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
   const [typeFilter, setTypeFilter] = useState<'all' | 'Receipt' | 'Payment'>('all');
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
 
-  // Sync state
+  // Sync & Fetch state
   const [isPushing, setIsPushing] = useState<boolean>(false);
+  const [isFetchingLedgers, setIsFetchingLedgers] = useState<boolean>(false);
+  const [isFetchingLastVch, setIsFetchingLastVch] = useState<boolean>(false);
+  const [lastReceiptNo, setLastReceiptNo] = useState<string | null>(null);
+  const [lastPaymentNo, setLastPaymentNo] = useState<string | null>(null);
   const [syncProgress, setSyncProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [pushStatusMessage, setPushStatusMessage] = useState<string | null>(null);
 
   // Modal for new bank/party ledger
   const [showNewBankModal, setShowNewBankModal] = useState(false);
   const [newBankName, setNewBankName] = useState('');
+  const [newBankCreating, setNewBankCreating] = useState(false);
+
   const [showNewPartyModal, setShowNewPartyModal] = useState(false);
   const [newPartyName, setNewPartyName] = useState('');
+  const [newPartyGroup, setNewPartyGroup] = useState('Sundry Debtors');
+  const [newPartyCreating, setNewPartyCreating] = useState(false);
 
-  // Conversion rates (if user wants to optionally convert to grams)
-  const [customRate, setCustomRate] = useState<number>(currentRate);
-  const [customGst, setCustomGst] = useState<number>(3);
+  // Fetch Latest Serial Numbers for Receipt & Payment from Tally Prime
+  const handleFetchLatestVoucherNumbers = async () => {
+    if (!bridgeStatus.companyName?.trim()) return;
+    setIsFetchingLastVch(true);
+    try {
+      const [rcptRes, pymtRes] = await Promise.all([
+        fetchLastBankVoucher(bridgeStatus.companyName, 'Receipt'),
+        fetchLastBankVoucher(bridgeStatus.companyName, 'Payment'),
+      ]);
+      setIsFetchingLastVch(false);
+      if (rcptRes.voucher) setLastReceiptNo(rcptRes.voucher.full);
+      if (pymtRes.voucher) setLastPaymentNo(pymtRes.voucher.full);
+    } catch {
+      setIsFetchingLastVch(false);
+    }
+  };
+
+  useEffect(() => {
+    if (bridgeStatus.connected && bridgeStatus.companyName) {
+      handleFetchLatestVoucherNumbers();
+    }
+  }, [bridgeStatus.connected, bridgeStatus.companyName]);
+
+  // Fetch Live Ledgers from Tally Prime
+  const handleFetchLedgersFromTally = async () => {
+    if (!bridgeStatus.companyName?.trim()) {
+      setPushStatusMessage('[!] Enter your Tally company name in Company Settings before fetching.');
+      return;
+    }
+    setIsFetchingLedgers(true);
+    setPushStatusMessage(`Fetching active Ledgers from Tally Prime (${bridgeStatus.companyName})...`);
+
+    try {
+      const res = await fetchTallyLedgers(bridgeStatus.companyName);
+      setIsFetchingLedgers(false);
+
+      if (res.error) {
+        setPushStatusMessage(`[!] Fetch Failed: ${res.error}`);
+        return;
+      }
+
+      if (res.bankLedgers.length > 0) {
+        setBankLedgers((prev) => Array.from(new Set([...res.bankLedgers, ...prev])));
+        if (!selectedBankLedger || !res.bankLedgers.includes(selectedBankLedger)) {
+          setSelectedBankLedger(res.bankLedgers[0]);
+        }
+      }
+
+      if (res.partyLedgers.length > 0) {
+        setPartyLedgers((prev) => Array.from(new Set([...res.partyLedgers, ...prev])));
+        if (!selectedDefaultParty || !res.partyLedgers.includes(selectedDefaultParty)) {
+          setSelectedDefaultParty(res.partyLedgers[0]);
+        }
+      }
+
+      setPushStatusMessage(
+        `[✓] Loaded ${res.bankLedgers.length} Bank Ledgers and ${res.partyLedgers.length} Party/Other Ledgers directly from Tally Prime!`
+      );
+    } catch (err: any) {
+      setIsFetchingLedgers(false);
+      setPushStatusMessage(`[!] Fetch Failed: ${err?.message || 'Error connecting to Tally'}`);
+    }
+  };
+
+  // Create New Bank Ledger in Tally
+  const handleCreateNewBankLedger = async () => {
+    const name = newBankName.trim();
+    if (!name) return;
+
+    setNewBankCreating(true);
+    if (bridgeStatus.companyName) {
+      try {
+        const xml = generateCreateSingleLedgerXml(name, 'Bank Accounts', bridgeStatus.companyName);
+        await importToTally(xml);
+      } catch {}
+    }
+
+    setBankLedgers((prev) => Array.from(new Set([...prev, name])));
+    setSelectedBankLedger(name);
+    setEntries((prev) => prev.map((e) => (e.bankLedger === selectedBankLedger ? { ...e, bankLedger: name } : e)));
+    setNewBankName('');
+    setNewBankCreating(false);
+    setShowNewBankModal(false);
+    setPushStatusMessage(`[✓] Created Bank Ledger "${name}" in Tally under "Bank Accounts".`);
+  };
+
+  // Create New Party Ledger in Tally
+  const handleCreateNewPartyLedger = async () => {
+    const name = newPartyName.trim();
+    if (!name) return;
+
+    setNewPartyCreating(true);
+    if (bridgeStatus.companyName) {
+      try {
+        const xml = generateCreateSingleLedgerXml(name, newPartyGroup, bridgeStatus.companyName);
+        await importToTally(xml);
+      } catch {}
+    }
+
+    setPartyLedgers((prev) => Array.from(new Set([...prev, name])));
+    setSelectedDefaultParty(name);
+    setNewPartyName('');
+    setNewPartyCreating(false);
+    setShowNewPartyModal(false);
+    setPushStatusMessage(`[✓] Created Party Ledger "${name}" in Tally under "${newPartyGroup}".`);
+  };
 
   const parseWorkbook = (wb: XLSX.WorkBook, sourceName: string) => {
     try {
@@ -110,29 +219,33 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       let refCol = -1;
       let creditCol = -1;
       let debitCol = -1;
+      let balanceCol = -1;
 
       for (let r = 0; r < Math.min(20, rawRows.length); r++) {
         const row = rawRows[r].map((c) => String(c).trim().toLowerCase());
         for (let c = 0; c < row.length; c++) {
           const val = row[c];
-          if (/date|value date|txn date|post date/i.test(val) && dateCol === -1) {
+          if (/^date$|txn date|value date|post date/i.test(val) && dateCol === -1) {
             dateCol = c;
             headerRowIndex = r;
           }
-          if (/narration|description|particulars|remarks|details/i.test(val) && descCol === -1) {
+          if (/^narration$|description|particulars|remarks|details/i.test(val) && descCol === -1) {
             descCol = c;
             headerRowIndex = r;
           }
           if (/chq|ref|utr|reference|cheque|txn id|transaction id/i.test(val) && refCol === -1) {
             refCol = c;
           }
-          if (/credit|deposit|cr|receipt/i.test(val) && !/debit/i.test(val) && creditCol === -1) {
+          if (/amount in|deposit|credit|^cr$|receipt/i.test(val) && !/out|debit/i.test(val) && creditCol === -1) {
             creditCol = c;
             headerRowIndex = r;
           }
-          if (/debit|dr|withdrawal|payment/i.test(val) && debitCol === -1) {
+          if (/amount out|debit|^dr$|withdrawal|payment/i.test(val) && debitCol === -1) {
             debitCol = c;
             headerRowIndex = r;
+          }
+          if (/^balance$|closing balance|^bal$/i.test(val) && balanceCol === -1) {
+            balanceCol = c;
           }
         }
         if ((creditCol !== -1 || debitCol !== -1) && (descCol !== -1 || dateCol !== -1)) {
@@ -149,27 +262,36 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
 
         let creditVal = 0;
         let debitVal = 0;
+        let balanceVal: number | string = '';
         let desc = 'Bank Transaction';
         let dateStr = new Date().toISOString().split('T')[0];
         let refStr = `UTR${Math.floor(10000000 + Math.random() * 90000000)}`;
 
-        if (creditCol >= 0 && row[creditCol] !== undefined) {
+        if (creditCol >= 0 && row[creditCol] !== undefined && row[creditCol] !== '') {
           const raw = String(row[creditCol]).replace(/[₹,$\s]/g, '');
           const num = parseFloat(raw);
           if (!isNaN(num) && num > 0) creditVal = num;
         }
 
-        if (debitCol >= 0 && row[debitCol] !== undefined) {
+        if (debitCol >= 0 && row[debitCol] !== undefined && row[debitCol] !== '') {
           const raw = String(row[debitCol]).replace(/[₹,$\s]/g, '');
           const num = parseFloat(raw);
           if (!isNaN(num) && num > 0) debitVal = num;
         }
 
+        if (balanceCol >= 0 && row[balanceCol] !== undefined && row[balanceCol] !== '') {
+          const raw = String(row[balanceCol]).replace(/[₹,$\s]/g, '');
+          const num = parseFloat(raw);
+          if (!isNaN(num)) balanceVal = num;
+          else balanceVal = String(row[balanceCol]).trim();
+        }
+
         if (creditVal === 0 && debitVal === 0) {
           for (let c = 0; c < row.length; c++) {
+            if (c === balanceCol) continue;
             const raw = String(row[c]).replace(/[₹,$\s]/g, '');
             const num = parseFloat(raw);
-            if (!isNaN(num) && num > 100) {
+            if (!isNaN(num) && num > 0) {
               creditVal = num;
               break;
             }
@@ -179,7 +301,7 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
         if (descCol >= 0 && row[descCol]) {
           desc = String(row[descCol]).trim();
         } else {
-          const textCols = row.filter((c) => typeof c === 'string' && c.trim().length > 3 && isNaN(Number(c)));
+          const textCols = row.filter((c, idx) => idx !== dateCol && typeof c === 'string' && c.trim().length > 3 && isNaN(Number(c)));
           if (textCols.length > 0) desc = String(textCols[0]).trim();
         }
 
@@ -211,6 +333,9 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
             refNo: refStr,
             type: isReceipt ? 'Receipt' : 'Payment',
             amount: Math.round(amount * 100) / 100,
+            amountIn: creditVal > 0 ? Math.round(creditVal * 100) / 100 : undefined,
+            amountOut: debitVal > 0 ? Math.round(debitVal * 100) / 100 : undefined,
+            balance: balanceVal !== '' ? balanceVal : undefined,
             bankLedger: selectedBankLedger,
             partyLedger: selectedDefaultParty,
             selected: true,
@@ -236,7 +361,7 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (/date|narration|particulars|description|credit|debit|balance/i.test(line) && i === 0) {
+      if (/date|narration|particulars|description|amount in|amount out|credit|debit|balance/i.test(line) && i === 0) {
         continue;
       }
 
@@ -249,23 +374,34 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       if (parts.length >= 2) {
         let amount = 0;
         let isReceipt = true;
-        let dateStr = new Date().toISOString().split('T')[0];
-        let desc = parts[1] || parts[0];
+        let dateStr = parts[0]?.trim() || new Date().toISOString().split('T')[0];
+        let desc = parts[1]?.trim() || 'Bank Transaction';
         let ref = `REF-${Math.floor(100000 + Math.random() * 900000)}`;
 
-        for (const p of parts) {
-          const cleanP = p.replace(/[₹,$\s]/g, '');
-          const num = parseFloat(cleanP);
-          if (!isNaN(num) && num > 10) {
-            amount = num;
-          } else if (/\d{4}-\d{2}-\d{2}|\d{2}[/-]\d{2}[/-]\d{4}/.test(p)) {
-            dateStr = p;
+        const inVal = parts[2] !== undefined ? parseFloat(String(parts[2]).replace(/[₹,$\s]/g, '')) : NaN;
+        const outVal = parts[3] !== undefined ? parseFloat(String(parts[3]).replace(/[₹,$\s]/g, '')) : NaN;
+
+        if (!isNaN(inVal) && inVal > 0) {
+          isReceipt = true;
+          amount = inVal;
+        } else if (!isNaN(outVal) && outVal > 0) {
+          isReceipt = false;
+          amount = outVal;
+        } else {
+          for (let c = 2; c < parts.length; c++) {
+            const cleanP = parts[c].replace(/[₹,$\s]/g, '');
+            const num = parseFloat(cleanP);
+            if (!isNaN(num) && num > 0) {
+              amount = num;
+              break;
+            }
+          }
+          if (/debit|dr|paid|charges|fee|withdrawal/i.test(desc)) {
+            isReceipt = false;
           }
         }
 
-        if (/debit|dr|paid|charge|fee|withdrawal/i.test(desc)) {
-          isReceipt = false;
-        }
+        const balVal = parts[4] !== undefined ? parseFloat(String(parts[4]).replace(/[₹,$\s]/g, '')) : undefined;
 
         if (amount > 0) {
           parsed.push({
@@ -275,6 +411,9 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
             refNo: ref,
             type: isReceipt ? 'Receipt' : 'Payment',
             amount: Math.round(amount * 100) / 100,
+            amountIn: inVal > 0 ? inVal : undefined,
+            amountOut: outVal > 0 ? outVal : undefined,
+            balance: !isNaN(balVal as number) ? balVal : parts[4]?.trim(),
             bankLedger: selectedBankLedger,
             partyLedger: selectedDefaultParty,
             selected: true,
@@ -367,8 +506,8 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
       setPushStatusMessage('[!] Enter the Tally company name in Company Settings before pushing.');
       return;
     }
-    if (selectedEntries.some((e) => !e.bankLedger?.trim() || !e.partyLedger?.trim())) {
-      setPushStatusMessage('[!] Every selected entry needs a bank ledger and a party ledger.');
+    if (selectedEntries.some((e) => !e.bankLedger?.trim())) {
+      setPushStatusMessage('[!] Every selected entry needs a Bank Ledger.');
       return;
     }
 
@@ -383,7 +522,41 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
     }
 
     // Push through the cloud relay -> tally-bridge.exe -> Tally (same path for PC and phone)
-    const result = await importToTally(bankVouchersXml);
+    let result = await importToTally(bankVouchersXml);
+
+    // If Tally reports that any ledger does not exist, auto-create the missing ledgers in Tally and retry!
+    if (!result.ok && result.lineErrors.some((e) => /does not exist|not found|unknown/i.test(e))) {
+      setPushStatusMessage('[...] Creating missing Bank/Party Ledgers in Tally Prime...');
+      const missingLedgers = new Set<string>();
+
+      for (const lineErr of result.lineErrors) {
+        const matches = lineErr.matchAll(/Ledger\s+['"]?([^'"]+)['"]?\s+does not exist/gi);
+        for (const m of matches) {
+          if (m[1]) missingLedgers.add(m[1].trim());
+        }
+      }
+
+      // Also ensure the selected bank and any explicitly assigned party ledgers exist
+      selectedEntries.forEach((e) => {
+        if (e.bankLedger) missingLedgers.add(e.bankLedger.trim());
+        if (e.partyLedger) missingLedgers.add(e.partyLedger.trim());
+      });
+
+      for (const missingName of missingLedgers) {
+        if (!missingName) continue;
+        const isBank = selectedEntries.some((e) => e.bankLedger === missingName) || /bank|od|occ/i.test(missingName);
+        const parentGroup = isBank ? 'Bank Accounts' : 'Sundry Debtors';
+        try {
+          const xml = generateCreateSingleLedgerXml(missingName, parentGroup, bridgeStatus.companyName);
+          await importToTally(xml);
+        } catch {}
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      setPushStatusMessage(`Retrying ${selectedEntries.length} Bank Vouchers into Tally (${bridgeStatus.companyName})...`);
+      result = await importToTally(bankVouchersXml);
+    }
+
     const imported = result.created + result.altered;
     const isSuccess = result.errors === 0 && imported >= selectedEntries.length;
     const errorMessage = imported > 0 && imported < selectedEntries.length
@@ -414,37 +587,24 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
     setPushStatusMessage(`Exported Tally Bank XML (${selectedEntries.length} vouchers) to ${filename}`);
   };
 
-  const taxMultiplier = 1 + (customGst || 3) / 100;
-  const effectiveRate = (customRate || currentRate || 7540) * taxMultiplier;
-  const calculatedWeightGrams =
-    effectiveRate > 0 && totalReceiptsAmount > 0
-      ? Math.round((totalReceiptsAmount / effectiveRate) * 1000) / 1000
-      : 0;
-
-  const handleApplyBullionSplit = () => {
-    if (calculatedWeightGrams > 0 && onApplyWeightToSplitter) {
-      onApplyWeightToSplitter(
-        calculatedWeightGrams,
-        `Bank Statement (${selectedEntries.length} Vouchers, ₹${totalReceiptsAmount.toLocaleString('en-IN')})`
-      );
-      if (onCloseModal) onCloseModal();
-    }
-  };
-
   const downloadSampleTemplate = () => {
     const sampleData = [
-      ['Date', 'Particulars / Narration', 'Chq / Ref No', 'Credit / Deposit (INR)', 'Debit / Withdrawal (INR)'],
-      ['2026-10-01', 'RTGS - COUNTER BULLION CASH DEPOSIT - A/C 4821', 'UTR9821049182', 450000, ''],
-      ['2026-10-01', 'NEFT - SAMPLE PARTY NAME', 'NEFT771920311', 325000, ''],
-      ['2026-10-01', 'IMPS / CDM CASH REPAIR & METAL RECEIPT', 'CDM104928110', 215000, ''],
-      ['2026-10-01', 'BANK CHARGES & SMS ALERT FEES', 'CHG104928', '', 450],
-      ['2026-10-01', 'NEFT PAYMENT TO BULLION REFINERY', 'UTR8491028471', '', 500000],
+      ['DATE', 'NARRATION', 'AMOUNT IN', 'AMOUNT OUT', 'BALANCE'],
+      ['02-Apr-25', 'MAND DR- BCF7075-P5P7PDH11544769 X10065727', '', 11556.00, 761499.26],
+      ['02-Apr-25', 'IMPSAR/509217705787/Insta Od Icici/043205005039', '', 11362.00, 750137.26],
+      ['02-Apr-25', 'IMPSAB/509218829384/TANISHKA1210/9424956617', 47000.00, '', 785302.26],
+      ['03-Apr-25', 'MOBFT to: PRITHVEE RAJ DWIVEDI/509321756999', '', 9999.00, 775303.26],
+      ['04-Apr-25', 'IMPSAB/509409349505/MS AN INDUSTRIES/9301180070', 50000.00, '', 825303.26],
+      ['04-Apr-25', 'NEFTO-DIVAM ENTERPRISES DELHI 001997733414', '', 100000.00, 586700.65],
+      ['08-Apr-25', 'Charges for PORD Customer Payment: UBINJ25098354011', '', 5.61, 586695.04],
+      ['11-Apr-25', 'NEFT: TRIMETAL INDUSTRIES HDFCH00179132937', 30000.00, '', 476994.43],
+      ['25-Apr-25', 'BY CASH 64170 TRANSPORT NAGAR, SATNA', 100000.00, '', 834293.41],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(sampleData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'BankStatement');
-    XLSX.writeFile(wb, 'Sample_Jewellery_Bank_Statement.xlsx');
+    XLSX.writeFile(wb, 'Sample_Bank_Statement.xlsx');
   };
 
   return (
@@ -507,6 +667,9 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
             onChange={(e) => applyBankLedgerToAll(e.target.value)}
             className="w-full h-9 px-2 text-xs font-mono font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-amber-600"
           >
+            {bankLedgers.length === 0 && (
+              <option value="">(No Bank Ledgers Loaded)</option>
+            )}
             {bankLedgers.map((l) => (
               <option key={l} value={l}>
                 {l}
@@ -518,7 +681,7 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className="text-xs font-bold text-slate-700">
-              Party Ledger (Receipt / Payment)
+              Party Ledger (Optional)
             </label>
             <button
               type="button"
@@ -533,6 +696,7 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
             onChange={(e) => applyPartyLedgerToAll(e.target.value)}
             className="w-full h-9 px-2 text-xs font-mono font-medium text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-amber-600"
           >
+            <option value="">(Optional - Suspense A/c)</option>
             {partyLedgers.map((l) => (
               <option key={l} value={l}>
                 {l}
@@ -543,8 +707,18 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
 
         <div>
           <label className="block text-xs font-bold text-slate-700 mb-1">Target Tally Company</label>
-          <div className="h-9 px-2.5 flex items-center text-xs font-mono text-slate-800 bg-white border border-slate-300 rounded-lg truncate">
-            {bridgeStatus.companyName}
+          <div className="h-9 px-2.5 flex items-center justify-between text-xs font-mono text-slate-800 bg-white border border-slate-300 rounded-lg truncate">
+            <span className="truncate">{bridgeStatus.companyName || 'Not configured'}</span>
+            <button
+              type="button"
+              onClick={handleFetchLedgersFromTally}
+              disabled={isFetchingLedgers}
+              className="ml-2 px-2 py-0.5 text-[11px] font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded inline-flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
+              title="Fetch all bank and party ledgers directly from Tally Prime"
+            >
+              <RefreshCw className={`w-3 h-3 ${isFetchingLedgers ? 'animate-spin' : ''}`} />
+              <span>{isFetchingLedgers ? 'Fetching...' : 'Fetch Ledgers'}</span>
+            </button>
           </div>
         </div>
 
@@ -563,50 +737,115 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
         </div>
       </div>
 
+      {/* Live Tally Serial Number Info Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 bg-slate-900 text-white rounded-lg text-xs font-mono">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-slate-400 font-sans font-semibold">Tally Voucher Sequences:</span>
+          <span className="inline-flex items-center gap-1 text-emerald-400">
+            Receipt: <strong className="text-white font-bold">{lastReceiptNo || '—'}</strong>
+          </span>
+          <span className="text-slate-600">|</span>
+          <span className="inline-flex items-center gap-1 text-rose-400">
+            Payment: <strong className="text-white font-bold">{lastPaymentNo || '—'}</strong>
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={handleFetchLatestVoucherNumbers}
+          disabled={isFetchingLastVch}
+          className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-sans inline-flex items-center gap-1 cursor-pointer transition-colors"
+          title="Fetch latest sequence from Tally Prime"
+        >
+          <RefreshCw className={`w-3 h-3 ${isFetchingLastVch ? 'animate-spin' : ''}`} />
+          <span>{isFetchingLastVch ? 'Refreshing...' : 'Check Latest No.'}</span>
+        </button>
+      </div>
+
       {uploadStatus && (
-        <div className="px-3.5 py-2 text-xs bg-emerald-50 border border-emerald-300 text-emerald-900 rounded-lg flex items-center justify-between">
-          <span className="font-medium">{uploadStatus}</span>
-          <button
-            type="button"
-            onClick={() => setEntries([])}
-            className="text-slate-600 hover:text-rose-700 text-[11px] font-bold cursor-pointer"
-          >
-            Clear All
-          </button>
+        <div className="px-3.5 py-2.5 text-xs bg-emerald-50 border border-emerald-300 text-emerald-950 rounded-lg flex items-center justify-between shadow-2xs">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-medium">{uploadStatus}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setEntries([])}
+              className="text-slate-600 hover:text-rose-700 text-[11px] font-bold cursor-pointer underline"
+            >
+              Clear Statement
+            </button>
+            <button
+              type="button"
+              onClick={() => setUploadStatus(null)}
+              className="p-1 text-emerald-700 hover:text-emerald-900 hover:bg-emerald-100 rounded cursor-pointer"
+              title="Dismiss message"
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
 
       {pushStatusMessage && (
-        <div className="px-3.5 py-2 text-xs bg-amber-50 border border-amber-300 text-amber-950 rounded-lg font-medium">
-          {pushStatusMessage}
+        <div className={`px-3.5 py-2.5 text-xs rounded-lg flex items-center justify-between shadow-2xs border ${
+          pushStatusMessage.includes('[✓]')
+            ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+            : pushStatusMessage.includes('Dispatching') || pushStatusMessage.includes('Syncing') || pushStatusMessage.includes('Fetching') || pushStatusMessage.includes('Retrying') || pushStatusMessage.includes('[...]')
+            ? 'bg-amber-100 border-amber-300 text-amber-950 font-semibold'
+            : 'bg-rose-50 border-rose-300 text-rose-950'
+        }`}>
+          <div className="flex items-center gap-2">
+            {pushStatusMessage.includes('[✓]') ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : pushStatusMessage.includes('Dispatching') || pushStatusMessage.includes('Syncing') || pushStatusMessage.includes('Fetching') || pushStatusMessage.includes('Retrying') || pushStatusMessage.includes('[...]') ? (
+              <RefreshCw className="w-4 h-4 text-amber-700 animate-spin shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            )}
+            <span className="font-medium">{pushStatusMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPushStatusMessage(null)}
+            className="p-1 text-slate-500 hover:text-slate-900 hover:bg-black/5 rounded cursor-pointer ml-2"
+            title="Dismiss message"
+          >
+            ✕
+          </button>
         </div>
       )}
 
-      {/* Paste / Direct Input if No File */}
+      {/* Empty State / Upload Dropzone */}
       {entries.length === 0 && (
-        <div className="p-6 border-2 border-dashed border-slate-300 rounded-xl bg-slate-50 text-center space-y-3">
-          <FileSpreadsheet className="w-10 h-10 text-slate-400 mx-auto" />
-          <div>
-            <h3 className="text-sm font-bold text-slate-800">No Bank Statement Loaded Yet</h3>
-            <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-              Select your bank statement Excel file (.xlsx, .xls, .csv) above, or paste transaction rows below.
+        <div className="p-8 border-2 border-dashed border-slate-300 rounded-xl bg-slate-50 text-center space-y-4">
+          <div className="w-12 h-12 bg-amber-100 text-amber-700 rounded-full flex items-center justify-center mx-auto">
+            <FileSpreadsheet className="w-6 h-6" />
+          </div>
+          <div className="max-w-md mx-auto space-y-1">
+            <h3 className="text-sm font-bold text-slate-900">Upload Bank Statement</h3>
+            <p className="text-xs text-slate-500">
+              Select your bank statement Excel file (.xlsx, .xls, .csv) to auto-import vouchers.
             </p>
           </div>
-          <div className="max-w-xl mx-auto space-y-2">
-            <textarea
-              rows={3}
-              value={pasteText}
-              onChange={(e) => setPasteText(e.target.value)}
-              placeholder="Paste statement rows here (Date, Particulars, Ref, Amount)..."
-              className="w-full p-2.5 text-xs font-mono border border-slate-300 rounded-lg bg-white resize-none"
-            />
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <label className="flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg cursor-pointer shadow-xs transition-colors">
+              <Upload className="w-4 h-4" />
+              <span>Select Bank Excel File</span>
+              <input
+                type="file"
+                accept=".xlsx, .xls, .csv, .tsv, .txt"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+            </label>
             <button
               type="button"
-              onClick={() => parseCsvOrText(pasteText)}
-              disabled={!pasteText.trim()}
-              className="w-full py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 rounded-lg cursor-pointer"
+              onClick={downloadSampleTemplate}
+              className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg cursor-pointer shadow-2xs"
             >
-              Parse &amp; Load Pasted Rows
+              <Download className="w-4 h-4 text-slate-500" />
+              <span>Download Sample Format</span>
             </button>
           </div>
         </div>
@@ -668,85 +907,120 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
           {/* Table Body */}
           <div className="overflow-x-auto max-h-80 overflow-y-auto">
             <table className="w-full border-collapse text-left text-xs font-mono tabular-nums">
-              <thead className="sticky top-0 bg-slate-50 text-slate-700 border-b border-slate-200 text-[11px] font-bold">
+              <thead className="sticky top-0 bg-slate-100 text-slate-800 border-b border-slate-200 text-xs font-bold uppercase tracking-wider">
                 <tr>
-                  <th className="py-2 pl-3 pr-2 w-8">#</th>
-                  <th className="py-2 px-2 whitespace-nowrap">Date</th>
-                  <th className="py-2 px-2 whitespace-nowrap">Vch Type</th>
-                  <th className="py-2 px-2 whitespace-nowrap">Narration / Particulars</th>
-                  <th className="py-2 px-2 whitespace-nowrap">Ref / UTR</th>
-                  <th className="py-2 px-2 whitespace-nowrap">Target Party Ledger</th>
-                  <th className="py-2 px-2 text-right whitespace-nowrap">Amount (₹)</th>
-                  <th className="py-2 pr-3 pl-2 text-center whitespace-nowrap">Sync Status</th>
+                  <th className="py-2.5 pl-3 pr-2 w-8 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedEntries.length === entries.length && entries.length > 0}
+                      onChange={(e) => toggleAll(e.target.checked)}
+                      className="w-4 h-4 text-amber-600 rounded border-slate-300 focus:ring-amber-500 cursor-pointer"
+                    />
+                  </th>
+                  <th className="py-2.5 px-2 w-10 text-slate-500 text-center">#</th>
+                  <th className="py-2.5 px-3 whitespace-nowrap">DATE</th>
+                  <th className="py-2.5 px-3 min-w-[280px]">NARRATION</th>
+                  <th className="py-2.5 px-3 text-right whitespace-nowrap text-emerald-800 bg-emerald-50/60 border-x border-emerald-100/80">
+                    AMOUNT IN
+                  </th>
+                  <th className="py-2.5 px-3 text-right whitespace-nowrap text-rose-800 bg-rose-50/60 border-r border-rose-100/80">
+                    AMOUNT OUT
+                  </th>
+                  <th className="py-2.5 px-3 text-right whitespace-nowrap text-slate-800 bg-slate-50">
+                    BALANCE
+                  </th>
+                  <th className="py-2.5 px-3 whitespace-nowrap">PARTY LEDGER</th>
+                  <th className="py-2.5 pr-3 pl-2 text-center whitespace-nowrap">STATUS</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredEntries.map((entry, idx) => (
-                  <tr
-                    key={entry.id}
-                    className={`hover:bg-slate-50/80 transition-colors ${
-                      entry.selected ? 'bg-amber-50/30' : 'opacity-70'
-                    }`}
-                  >
-                    <td className="py-2 pl-3 pr-2">
-                      <input
-                        type="checkbox"
-                        checked={entry.selected}
-                        onChange={() => toggleSelect(entry.id)}
-                        className="w-4 h-4 text-amber-600 rounded border-slate-300 focus:ring-amber-500 cursor-pointer"
-                      />
-                    </td>
-                    <td className="py-2 px-2 text-slate-700 whitespace-nowrap">{entry.date}</td>
-                    <td className="py-2 px-2 whitespace-nowrap">
-                      <select
-                        value={entry.type}
-                        onChange={(e) => updateEntryType(entry.id, e.target.value as 'Receipt' | 'Payment')}
-                        className={`text-[11px] font-bold px-1.5 py-0.5 rounded border ${
-                          entry.type === 'Receipt'
-                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                            : 'bg-rose-50 text-rose-800 border-rose-200'
-                        }`}
-                      >
-                        <option value="Receipt">Receipt (Credit)</option>
-                        <option value="Payment">Payment (Debit)</option>
-                      </select>
-                    </td>
-                    <td className="py-2 px-2 text-slate-900 font-sans font-medium max-w-xs truncate">
-                      {entry.narration}
-                    </td>
-                    <td className="py-2 px-2 text-slate-500 whitespace-nowrap">{entry.refNo}</td>
-                    <td className="py-2 px-2 whitespace-nowrap">
-                      <select
-                        value={entry.partyLedger}
-                        onChange={(e) => updateEntryParty(entry.id, e.target.value)}
-                        className="h-6 px-1.5 text-xs font-mono bg-white border border-slate-200 rounded max-w-[200px] truncate"
-                      >
-                        {partyLedgers.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td
-                      className={`py-2 px-2 text-right font-bold whitespace-nowrap ${
-                        entry.type === 'Receipt' ? 'text-emerald-700' : 'text-rose-700'
+              <tbody className="divide-y divide-slate-200/80">
+                {filteredEntries.map((entry, idx) => {
+                  const isReceipt = entry.type === 'Receipt';
+                  const inAmt = entry.amountIn ?? (isReceipt ? entry.amount : undefined);
+                  const outAmt = entry.amountOut ?? (!isReceipt ? entry.amount : undefined);
+
+                  return (
+                    <tr
+                      key={entry.id}
+                      className={`hover:bg-amber-50/40 transition-colors ${
+                        entry.selected ? 'bg-white' : 'opacity-60 bg-slate-50/50'
                       }`}
                     >
-                      {entry.type === 'Receipt' ? '+' : '-'}₹{entry.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                    </td>
-                    <td className="py-2 pr-3 pl-2 text-center whitespace-nowrap">
-                      {entry.syncStatus === 'synced' ? (
-                        <span className="text-emerald-700 font-bold flex items-center justify-center gap-1 text-[11px]">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Synced</span>
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 text-[11px]">Ready</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      <td className="py-2 pl-3 pr-2 text-center">
+                        <input
+                          type="checkbox"
+                          checked={entry.selected}
+                          onChange={() => toggleSelect(entry.id)}
+                          className="w-4 h-4 text-amber-600 rounded border-slate-300 focus:ring-amber-500 cursor-pointer"
+                        />
+                      </td>
+                      <td className="py-2 px-2 text-slate-400 text-center font-mono text-[11px]">
+                        {idx + 1}
+                      </td>
+                      <td className="py-2 px-3 text-slate-800 font-semibold whitespace-nowrap">
+                        {entry.date}
+                      </td>
+                      <td className="py-2 px-3 text-slate-900 font-sans font-medium text-xs break-words max-w-md">
+                        {entry.narration}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-bold whitespace-nowrap bg-emerald-50/30 border-x border-emerald-100/50">
+                        {inAmt !== undefined && inAmt > 0 ? (
+                          <span className="text-emerald-700">
+                            ₹{inAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300 font-normal">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-bold whitespace-nowrap bg-rose-50/30 border-r border-rose-100/50">
+                        {outAmt !== undefined && outAmt > 0 ? (
+                          <span className="text-rose-700">
+                            ₹{outAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300 font-normal">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-medium whitespace-nowrap text-slate-700 bg-slate-50/50">
+                        {entry.balance !== undefined && entry.balance !== '' ? (
+                          typeof entry.balance === 'number' ? (
+                            `₹${entry.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
+                          ) : (
+                            String(entry.balance)
+                          )
+                        ) : (
+                          <span className="text-slate-300 font-normal">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <select
+                          value={entry.partyLedger}
+                          onChange={(e) => updateEntryParty(entry.id, e.target.value)}
+                          className="h-7 px-2 text-xs font-mono bg-white border border-slate-300 rounded-md max-w-[200px] truncate focus:border-amber-500 focus:outline-none"
+                        >
+                          <option value="">(Optional / Suspense)</option>
+                          {partyLedgers.map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 pr-3 pl-2 text-center whitespace-nowrap">
+                        {entry.syncStatus === 'synced' ? (
+                          <span className="text-emerald-700 font-bold inline-flex items-center gap-1 text-[11px] bg-emerald-100 px-2 py-0.5 rounded-full">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Synced</span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-500 text-[11px] font-medium bg-slate-100 px-2 py-0.5 rounded-full">
+                            Ready
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -806,73 +1080,47 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
         </div>
       )}
 
-      {/* Optional: Bullion Splitter Bridge Accordion if user wants to convert credits to metal */}
-      {entries.length > 0 && onApplyWeightToSplitter && (
-        <div className="bg-amber-50/70 border border-amber-300/80 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3">
-          <div className="space-y-0.5">
-            <div className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>Optional: Convert Bank Deposits into Bullion Split Invoices</span>
-            </div>
-            <p className="text-[11px] text-slate-600">
-              Transfer deposit receipts (₹{totalReceiptsAmount.toLocaleString('en-IN')}) as bullion weight to the bill splitter.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-sm font-bold font-mono text-slate-950">
-                {calculatedWeightGrams.toFixed(3)} g
-              </div>
-              <div className="text-[10px] text-slate-500">@ ₹{customRate}/g + 3% GST</div>
-            </div>
-            <button
-              type="button"
-              onClick={handleApplyBullionSplit}
-              disabled={calculatedWeightGrams <= 0}
-              className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-slate-900 bg-amber-300 hover:bg-amber-400 disabled:opacity-50 rounded-lg cursor-pointer"
-            >
-              <span>Transfer to Splitter</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Modal: Add New Bank Ledger */}
       {showNewBankModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-sm w-full p-4">
-            <h3 className="text-xs font-bold text-slate-900 mb-1">Add New Bank Ledger</h3>
-            <input
-              type="text"
-              autoFocus
-              value={newBankName}
-              onChange={(e) => setNewBankName(e.target.value.toUpperCase())}
-              placeholder="e.g. YES BANK CURRENT A/C"
-              className="w-full h-8 px-2 text-xs font-mono border border-slate-300 rounded-md mb-3"
-            />
-            <div className="flex justify-end gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-sm w-full p-4.5 space-y-3">
+            <div>
+              <h3 className="text-xs font-bold text-slate-900">Create Bank Ledger</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Will create in Tally Prime under <span className="font-semibold text-slate-800">"Bank Accounts"</span>.
+              </p>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">Bank Name / Ledger</label>
+              <input
+                type="text"
+                autoFocus
+                value={newBankName}
+                onChange={(e) => setNewBankName(e.target.value.toUpperCase())}
+                placeholder="e.g. HDFC BANK A/C"
+                className="w-full h-8 px-2 text-xs font-mono border border-slate-300 rounded-md focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setShowNewBankModal(false)}
-                className="px-3 py-1 text-xs text-slate-600 bg-slate-100 rounded"
+                onClick={() => {
+                  setNewBankName('');
+                  setShowNewBankModal(false);
+                }}
+                disabled={newBankCreating}
+                className="px-3 py-1.5 text-xs text-slate-600 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (newBankName.trim()) {
-                    setBankLedgers((prev) => [...prev, newBankName.trim()]);
-                    setSelectedBankLedger(newBankName.trim());
-                    setNewBankName('');
-                    setShowNewBankModal(false);
-                  }
-                }}
-                className="px-3 py-1 text-xs font-bold text-white bg-slate-900 rounded"
+                onClick={handleCreateNewBankLedger}
+                disabled={!newBankName.trim() || newBankCreating}
+                className="px-3.5 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 rounded cursor-pointer shadow-xs inline-flex items-center gap-1"
               >
-                Save Bank
+                {newBankCreating && <RefreshCw className="w-3 h-3 animate-spin" />}
+                <span>{newBankCreating ? 'Creating in Tally...' : 'Create in Tally'}</span>
               </button>
             </div>
           </div>
@@ -881,38 +1129,61 @@ export const BankStatementManager: React.FC<BankStatementManagerProps> = ({
 
       {/* Modal: Add New Party Ledger */}
       {showNewPartyModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-sm w-full p-4">
-            <h3 className="text-xs font-bold text-slate-900 mb-1">Add New Party Ledger</h3>
-            <input
-              type="text"
-              autoFocus
-              value={newPartyName}
-              onChange={(e) => setNewPartyName(e.target.value.toUpperCase())}
-              placeholder="Party / ledger name"
-              className="w-full h-8 px-2 text-xs font-mono border border-slate-300 rounded-md mb-3"
-            />
-            <div className="flex justify-end gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-2xl max-w-sm w-full p-4.5 space-y-3">
+            <div>
+              <h3 className="text-xs font-bold text-slate-900">Create Party / Account Ledger</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Creates the ledger directly in your active Tally company.
+              </p>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">Ledger Name</label>
+              <input
+                type="text"
+                autoFocus
+                value={newPartyName}
+                onChange={(e) => setNewPartyName(e.target.value.toUpperCase())}
+                placeholder="e.g. TANISHKA ENTERPRISES"
+                className="w-full h-8 px-2 text-xs font-mono border border-slate-300 rounded-md focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">Under Group (Parent)</label>
+              <select
+                value={newPartyGroup}
+                onChange={(e) => setNewPartyGroup(e.target.value)}
+                className="w-full h-8 px-2 text-xs font-mono bg-white border border-slate-300 rounded-md focus:border-amber-500 focus:outline-none"
+              >
+                <option value="Sundry Debtors">Sundry Debtors (Customers)</option>
+                <option value="Sundry Creditors">Sundry Creditors (Suppliers/Vendors)</option>
+                <option value="Indirect Expenses">Indirect Expenses (Charges/Fees)</option>
+                <option value="Capital Account">Capital Account</option>
+                <option value="Cash-in-hand">Cash-in-hand</option>
+                <option value="Suspense A/c">Suspense A/c</option>
+                <option value="Direct Expenses">Direct Expenses</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setShowNewPartyModal(false)}
-                className="px-3 py-1 text-xs text-slate-600 bg-slate-100 rounded"
+                onClick={() => {
+                  setNewPartyName('');
+                  setShowNewPartyModal(false);
+                }}
+                disabled={newPartyCreating}
+                className="px-3 py-1.5 text-xs text-slate-600 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (newPartyName.trim()) {
-                    setPartyLedgers((prev) => [...prev, newPartyName.trim()]);
-                    setSelectedDefaultParty(newPartyName.trim());
-                    setNewPartyName('');
-                    setShowNewPartyModal(false);
-                  }
-                }}
-                className="px-3 py-1 text-xs font-bold text-white bg-slate-900 rounded"
+                onClick={handleCreateNewPartyLedger}
+                disabled={!newPartyName.trim() || newPartyCreating}
+                className="px-3.5 py-1.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 rounded cursor-pointer shadow-xs inline-flex items-center gap-1"
               >
-                Save Party
+                {newPartyCreating && <RefreshCw className="w-3 h-3 animate-spin" />}
+                <span>{newPartyCreating ? 'Creating in Tally...' : 'Create in Tally'}</span>
               </button>
             </div>
           </div>

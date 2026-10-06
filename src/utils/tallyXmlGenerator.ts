@@ -451,6 +451,20 @@ ${voucherMessages}
 </ENVELOPE>`;
 }
 
+/**
+ * Bank Receipt / Payment vouchers (single-entry layout).
+ *
+ * Indian accounting rules:
+ *  - Receipt (money in):  Bank DEBIT  | Party/Suspense CREDIT
+ *  - Payment (money out): Bank CREDIT | Party/Suspense DEBIT
+ *
+ * Single-Entry Tally mapping:
+ *  1. Bank ledger is the FIRST ALLLEDGERENTRIES entry, ISPARTYLEDGER=Yes, with BANKALLOCATIONS.LIST.
+ *     This instructs Tally to bind the bank ledger to the top "Account" / "Current balance" header.
+ *  2. Counter ledger (party/suspense/expense) is the SECOND ALLLEDGERENTRIES entry, ISPARTYLEDGER=No.
+ *     This renders cleanly in the "Particulars" line-item table.
+ *  3. Header PARTYLEDGERNAME / PARTYNAME = bank ledger.
+ */
 export function generateBankVouchersTallyXml(
   entries: BankVoucherEntry[],
   companyName: string = getStoredCompanyName()
@@ -459,62 +473,54 @@ export function generateBankVouchersTallyXml(
   const safeCompany = escapeXml(companyName.trim());
   const voucherMessages = entries
     .filter((e) => e.selected)
-    .map((e, index) => {
+    .map((e) => {
       const tallyDate = formatTallyDate(e.date);
       const isReceipt = e.type === 'Receipt';
-      const vchNumber = e.refNo || `${isReceipt ? 'BRCT' : 'BPMT'}-${index + 1}`;
+      const vType = isReceipt ? 'Receipt' : 'Payment';
+      const bankName = escapeXml(e.bankLedger?.trim() || 'Bank Accounts');
+      const partyName = escapeXml(e.partyLedger?.trim() || 'Suspense A/c');
+      const amt = Math.abs(e.amount).toFixed(2);
 
-      const amtStr = Math.abs(e.amount).toFixed(2);
+      // Receipt: bank Dr (-amt, deemed positive Yes) | party Cr (+amt, deemed positive No)
+      // Payment: bank Cr (+amt, deemed positive No)  | party Dr (-amt, deemed positive Yes)
+      const bankDeemed = isReceipt ? 'Yes' : 'No';
+      const bankAmt = isReceipt ? `-${amt}` : amt;
+      const partyDeemed = isReceipt ? 'No' : 'Yes';
+      const partyAmt = isReceipt ? amt : `-${amt}`;
 
-      if (isReceipt) {
-        return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHER VCHTYPE="Receipt" ACTION="Create" OBJVIEW="Accounting Voucher View">
+      return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <VOUCHER VCHTYPE="${vType}" ACTION="Create" OBJVIEW="Accounting Voucher View">
           <DATE>${tallyDate}</DATE>
           <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
-          <REFERENCEDATE>${tallyDate}</REFERENCEDATE>
-          <VOUCHERTYPENAME>Receipt</VOUCHERTYPENAME>
-          <VOUCHERNUMBER>${escapeXml(vchNumber)}</VOUCHERNUMBER>
-          <PARTYLEDGERNAME>${escapeXml(e.partyLedger)}</PARTYLEDGERNAME>
+          <VOUCHERTYPENAME>${vType}</VOUCHERTYPENAME>
+          <PARTYNAME>${bankName}</PARTYNAME>
+          <PARTYLEDGERNAME>${bankName}</PARTYLEDGERNAME>
+          <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
           <NARRATION>${escapeXml(e.narration)}</NARRATION>
-          <LEDGERENTRIES.LIST>
-            <LEDGERNAME>${escapeXml(e.bankLedger)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
-            <ISPARTYLEDGER>No</ISPARTYLEDGER>
-            <AMOUNT>-${amtStr}</AMOUNT>
-          </LEDGERENTRIES.LIST>
-          <LEDGERENTRIES.LIST>
-            <LEDGERNAME>${escapeXml(e.partyLedger)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${bankName}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>${bankDeemed}</ISDEEMEDPOSITIVE>
             <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
-            <AMOUNT>${amtStr}</AMOUNT>
-          </LEDGERENTRIES.LIST>
+            <ISLASTDEEMEDPOSITIVE>${bankDeemed}</ISLASTDEEMEDPOSITIVE>
+            <AMOUNT>${bankAmt}</AMOUNT>
+            <BANKALLOCATIONS.LIST>
+              <DATE>${tallyDate}</DATE>
+              <INSTRUMENTDATE>${tallyDate}</INSTRUMENTDATE>
+              <TRANSACTIONTYPE>Others</TRANSACTIONTYPE>
+              <BANKPARTYNAME>${partyName}</BANKPARTYNAME>
+              <PAYMENTMODE>Transacted</PAYMENTMODE>
+              <AMOUNT>${bankAmt}</AMOUNT>
+            </BANKALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>${partyName}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>${partyDeemed}</ISDEEMEDPOSITIVE>
+            <ISPARTYLEDGER>No</ISPARTYLEDGER>
+            <ISLASTDEEMEDPOSITIVE>${partyDeemed}</ISLASTDEEMEDPOSITIVE>
+            <AMOUNT>${partyAmt}</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
         </VOUCHER>
       </TALLYMESSAGE>`;
-      } else {
-        return `      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHER VCHTYPE="Payment" ACTION="Create" OBJVIEW="Accounting Voucher View">
-          <DATE>${tallyDate}</DATE>
-          <EFFECTIVEDATE>${tallyDate}</EFFECTIVEDATE>
-          <REFERENCEDATE>${tallyDate}</REFERENCEDATE>
-          <VOUCHERTYPENAME>Payment</VOUCHERTYPENAME>
-          <VOUCHERNUMBER>${escapeXml(vchNumber)}</VOUCHERNUMBER>
-          <PARTYLEDGERNAME>${escapeXml(e.partyLedger)}</PARTYLEDGERNAME>
-          <NARRATION>${escapeXml(e.narration)}</NARRATION>
-          <LEDGERENTRIES.LIST>
-            <LEDGERNAME>${escapeXml(e.partyLedger)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
-            <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
-            <AMOUNT>-${amtStr}</AMOUNT>
-          </LEDGERENTRIES.LIST>
-          <LEDGERENTRIES.LIST>
-            <LEDGERNAME>${escapeXml(e.bankLedger)}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
-            <ISPARTYLEDGER>No</ISPARTYLEDGER>
-            <AMOUNT>${amtStr}</AMOUNT>
-          </LEDGERENTRIES.LIST>
-        </VOUCHER>
-      </TALLYMESSAGE>`;
-      }
     })
     .join('\n');
 
@@ -533,6 +539,44 @@ export function generateBankVouchersTallyXml(
       </REQUESTDESC>
       <REQUESTDATA>
 ${voucherMessages}
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>`;
+}
+
+export function generateCreateSingleLedgerXml(
+  ledgerName: string,
+  parentGroup: string = 'Sundry Debtors',
+  companyName: string = getStoredCompanyName()
+): string {
+  if (!companyName?.trim()) throw new Error('Tally company name is required.');
+  const safeCompany = escapeXml(companyName.trim());
+  const safeName = escapeXml(ledgerName.trim());
+  const safeParent = escapeXml(parentGroup.trim());
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>All Masters</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>${safeCompany}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="${safeName}" ACTION="Create">
+            <NAME>${safeName}</NAME>
+            <PARENT>${safeParent}</PARENT>
+            <ISBILLWISEON>No</ISBILLWISEON>
+            <AFFECTSSTOCK>No</AFFECTSSTOCK>
+          </LEDGER>
+        </TALLYMESSAGE>
       </REQUESTDATA>
     </IMPORTDATA>
   </BODY>

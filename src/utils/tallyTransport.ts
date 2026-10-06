@@ -180,3 +180,98 @@ export async function fetchLastSalesVoucher(company: string): Promise<{ voucher:
   }
   return { voucher: parseLastSalesVoucher(res.tallyResponse) };
 }
+
+export async function fetchLastBankVoucher(
+  company: string,
+  voucherType: 'Receipt' | 'Payment' = 'Receipt'
+): Promise<{ voucher: LastVoucher | null; error?: string }> {
+  const key = getLicenseKey();
+  if (!key) return { voucher: null, error: 'No license key set in Company Settings.' };
+  if (!company?.trim()) return { voucher: null, error: 'No Tally company specified.' };
+
+  const res = await queryTallyViaCloudflareRelay(buildLastSalesVoucherQuery(company, voucherType), key);
+  if (!res.success || !res.tallyResponse) return { voucher: null, error: res.error || 'No response from bridge' };
+  const lower = res.tallyResponse.toLowerCase();
+  if (lower.includes('could not set') || lower.includes('no company')) {
+    return { voucher: null, error: `Tally could not open company "${company}".` };
+  }
+  return { voucher: parseLastSalesVoucher(res.tallyResponse) };
+}
+
+export interface TallyLedgerItem {
+  name: string;
+  parent: string;
+}
+
+export function buildFetchLedgersQuery(company: string): string {
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return `<ENVELOPE>
+ <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>ATITSLedgersCollection</ID></HEADER>
+ <BODY><DESC>
+  <STATICVARIABLES>
+   <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+   <SVCURRENTCOMPANY>${esc(company)}</SVCURRENTCOMPANY>
+  </STATICVARIABLES>
+  <TDL><TDLMESSAGE>
+   <COLLECTION NAME="ATITSLedgersCollection" ISMODIFY="No">
+    <TYPE>Ledger</TYPE>
+    <FETCH>Name, Parent</FETCH>
+   </COLLECTION>
+  </TDLMESSAGE></TDL>
+ </DESC></BODY>
+</ENVELOPE>`;
+}
+
+export function parseTallyLedgers(raw: string): TallyLedgerItem[] {
+  const ledgers: TallyLedgerItem[] = [];
+  const re = /<LEDGER[\s>][\s\S]*?<\/LEDGER>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const block = m[0];
+    const nameMatch = block.match(/<NAME[^>]*>([^<]+)<\/NAME>/i) || block.match(/NAME="([^"]+)"/i);
+    const parentMatch = block.match(/<PARENT[^>]*>([^<]+)<\/PARENT>/i);
+    if (nameMatch && nameMatch[1].trim()) {
+      ledgers.push({
+        name: decodeXml(nameMatch[1].trim()),
+        parent: parentMatch ? decodeXml(parentMatch[1].trim()) : '',
+      });
+    }
+  }
+  return ledgers;
+}
+
+export async function fetchTallyLedgers(company: string): Promise<{
+  bankLedgers: string[];
+  partyLedgers: string[];
+  allLedgers: TallyLedgerItem[];
+  error?: string;
+}> {
+  const key = getLicenseKey();
+  if (!key) return { bankLedgers: [], partyLedgers: [], allLedgers: [], error: 'No license key set in Company Settings.' };
+  if (!company?.trim()) return { bankLedgers: [], partyLedgers: [], allLedgers: [], error: 'No Tally company specified.' };
+
+  const res = await queryTallyViaCloudflareRelay(buildFetchLedgersQuery(company), key);
+  if (!res.success || !res.tallyResponse) {
+    return { bankLedgers: [], partyLedgers: [], allLedgers: [], error: res.error || 'No response from bridge' };
+  }
+  const all = parseTallyLedgers(res.tallyResponse);
+  const bankLedgers: string[] = [];
+  const partyLedgers: string[] = [];
+
+  for (const item of all) {
+    const parentLower = item.parent.toLowerCase();
+    if (
+      parentLower.includes('bank') ||
+      parentLower.includes('od') ||
+      parentLower.includes('occ') ||
+      /bank|hdfc|icici|sbi|axis|pnb|canara|kotak|bob|union|indusind/i.test(item.name)
+    ) {
+      bankLedgers.push(item.name);
+    } else {
+      partyLedgers.push(item.name);
+    }
+  }
+
+  return { bankLedgers, partyLedgers, allLedgers: all };
+}

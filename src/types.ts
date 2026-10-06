@@ -99,6 +99,9 @@ export interface BankVoucherEntry {
   refNo: string;
   type: 'Receipt' | 'Payment';
   amount: number;
+  amountIn?: number;
+  amountOut?: number;
+  balance?: number | string;
   bankLedger: string;
   partyLedger: string;
   selected: boolean;

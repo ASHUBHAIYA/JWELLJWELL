@@ -201,19 +201,6 @@ export const CompanyProfileModal: React.FC<CompanyProfileModalProps> = ({
             </span>
           </div>
 
-          <label className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={eduInput}
-              onChange={(e) => setEduInput(e.target.checked)}
-              className="mt-0.5"
-            />
-            <span>
-              Tally Educational mode — moves voucher dates to the 1st / 2nd / last day of the month so test imports
-              are accepted. Turn OFF for licensed Tally.
-            </span>
-          </label>
-
           {error && (
             <div className="flex items-center gap-1.5 text-xs text-rose-400 font-medium bg-rose-950/40 p-2 rounded-lg border border-rose-900/60">
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />

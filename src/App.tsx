@@ -384,19 +384,6 @@ export default function App() {
     showToast(`Saved CSV spreadsheet with ${bills.length} bill rows.`);
   }, [bills, summary, config, showToast]);
 
-  const handleApplyBankWeight = useCallback(
-    (weightInGrams: number, note: string) => {
-      setConfig((prev) => ({
-        ...prev,
-        totalGoldGrams: weightInGrams,
-      }));
-      setBankModalOpen(false);
-      setActiveTab('workbench');
-      showToast(`Applied ${weightInGrams.toFixed(3)} g from bank statement (${note}) to splitter.`);
-    },
-    [setConfig, showToast]
-  );
-
   const unsyncedCount = useMemo(
     () => bills.filter((b) => b.syncStatus !== 'synced').length,
     [bills]
@@ -504,8 +491,6 @@ export default function App() {
         {activeTab === 'bank-statement' && (
           <BankStatementManager
             bridgeStatus={bridgeStatus}
-            currentRate={config.minRate || 7540}
-            onApplyWeightToSplitter={handleApplyBankWeight}
           />
         )}
 
@@ -564,9 +549,6 @@ export default function App() {
         isOpen={bankModalOpen}
         onClose={() => setBankModalOpen(false)}
         bridgeStatus={bridgeStatus}
-        currentRate={config.minRate || 7500}
-        unitLabel={config.unitLabel}
-        onApplyWeightToSplitter={handleApplyBankWeight}
       />
 
       {/* Tally Sync Drawer with 2-Step Pipeline */}
